@@ -1,0 +1,25 @@
+# Compiled APKs & Release Artifacts (distributed via GitHub Releases)
+*.apk
+*.apk.idsig
+*.aab
+
+# Local reverse-engineering & NDK/SDK toolchains (installed locally in tools/)
+/tools/
+
+# Android & NDK intermediate build directories
+AresModMenu/build/
+AresModMenu/app/build/
+AresModMenu/.gradle/
+AresModMenu/local.properties
+AresModMenu/app/src/main/obj/
+AresModMenu/app/src/main/jni/obj/
+AresModMenu/app/src/main/jni/libs/
+
+# Python / OS / Editor caches
+**/__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

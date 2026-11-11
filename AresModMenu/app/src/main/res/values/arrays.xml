@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- LSPosed / Vector 推荐作用域：覆盖《阿瑞斯病毒2》官服及各主流安卓渠道服包名 -->
+    <string-array name="xposed_scope">
+        <!-- 官服 / TapTap / 好游快爆 / 青瓷官方 -->
+        <item>com.zzonegame.aresvirus2.android</item>
+        <item>com.zzonegame.aresvirus2</item>
+        <item>com.zzonegame.aresvirus2.taptap</item>
+        <item>com.zzonegame.aresvirus2.hykb</item>
+        <item>com.qcplay.aresvirus2</item>
+        <item>com.qcplay.aresvirus2.android</item>
+        <!-- OPPO 渠道服 -->
+        <item>com.zzonegame.aresvirus2.nearme.gamecenter</item>
+        <!-- vivo 渠道服 -->
+        <item>com.zzonegame.aresvirus2.vivo</item>
+        <!-- 小米渠道服 -->
+        <item>com.zzonegame.aresvirus2.mi</item>
+        <!-- 九游 / UC / 阿里游戏渠道服 -->
+        <item>com.zzonegame.aresvirus2.aligames</item>
+        <item>com.zzonegame.aresvirus2.uc</item>
+        <!-- Bilibili (B站) 渠道服 -->
+        <item>com.zzonegame.aresvirus2.bilibili</item>
+        <!-- 华为 / 荣耀渠道服 -->
+        <item>com.zzonegame.aresvirus2.huawei</item>
+        <item>com.zzonegame.aresvirus2.honor</item>
+        <!-- 4399 渠道服 -->
+        <item>com.zzonegame.aresvirus2.m4399</item>
+        <item>com.zzonegame.aresvirus2.4399</item>
+        <!-- 应用宝 (腾讯) 渠道服 -->
+        <item>com.zzonegame.aresvirus2.yyb</item>
+        <item>com.tencent.tmgp.aresvirus2</item>
+        <item>com.tencent.tmgp.zzonegame.aresvirus2</item>
+        <!-- 魅族 / 百度 / 360 / 联想 / 三星 / 努比亚 / 酷派 / 字节 / 摸摸鱼 / 7723 / 233 -->
+        <item>com.zzonegame.aresvirus2.mz</item>
+        <item>com.zzonegame.aresvirus2.meizu</item>
+        <item>com.zzonegame.aresvirus2.baidu</item>
+        <item>com.zzonegame.aresvirus2.qihoo</item>
+        <item>com.zzonegame.aresvirus2.lenovo</item>
+        <item>com.zzonegame.aresvirus2.samsung</item>
+        <item>com.zzonegame.aresvirus2.nubia</item>
+        <item>com.zzonegame.aresvirus2.coolpad</item>
+        <item>com.zzonegame.aresvirus2.douyin</item>
+        <item>com.zzonegame.aresvirus2.bytedance</item>
+        <item>com.zzonegame.aresvirus2.momoyu</item>
+        <item>com.zzonegame.aresvirus2.7723</item>
+        <item>com.zzonegame.aresvirus2.meta</item>
+    </string-array>
+</resources>

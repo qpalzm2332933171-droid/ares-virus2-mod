@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.android.support">
+
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <queries>
+        <package android:name="com.zzonegame.aresvirus2.android" />
+        <package android:name="com.zzonegame.aresvirus2.nearme.gamecenter" />
+        <package android:name="com.zzonegame.aresvirus2.vivo" />
+        <package android:name="com.zzonegame.aresvirus2.mi" />
+        <package android:name="com.zzonegame.aresvirus2.aligames" />
+        <package android:name="com.zzonegame.aresvirus2.uc" />
+        <package android:name="com.zzonegame.aresvirus2.bilibili" />
+        <package android:name="com.zzonegame.aresvirus2.huawei" />
+        <package android:name="com.zzonegame.aresvirus2.m4399" />
+        <package android:name="com.zzonegame.aresvirus2.taptap" />
+        <package android:name="com.zzonegame.aresvirus2.hykb" />
+        <package android:name="com.zzonegame.aresvirus2" />
+    </queries>
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true">
+
+        <activity android:name="com.android.support.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name="com.android.support.Launcher"
+            android:enabled="true"
+            android:exported="true"
+            android:stopWithTask="true" />
+
+        <!-- ===== LSPosed / Vector 模块声明 ===== -->
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription"
+            android:value="Aresvirus2 直装 Mod 菜单（全渠道/官服通用：物品/属性/Buff/弹药/耐久/蓝图/DLC/反检测）" />
+        <meta-data android:name="xposedminversion" android:value="93" />
+        <meta-data android:name="xposedscope" android:resource="@array/xposed_scope" />
+    </application>
+</manifest>
