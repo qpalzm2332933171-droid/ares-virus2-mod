@@ -39,6 +39,7 @@
 - **零卡顿低端机优化**：全列表采用 ViewHolder 复用 `ListView` + 双线程异步 `LruCache(384)` 图标加载；启动无多余欢迎弹窗或 Toast 刷屏。
 - **真隐身与防裁剪悬浮球**：基于 `FrameLayout.LayoutParams` 自适应边距定位并禁用重叠裁剪，支持在 **ARM64 真机与 MuMu 等 x86_64 (`libhoudini`) 模拟器** 下流畅拖拽不缺角、不遮挡游戏触控；点击顶栏 **`隐藏`** 可完全隐形至 `0.0f`，点击原位置随时唤回。
 - **双端统一稳定挂载**：将原生探测迁移至 `UnityPlayer.nativeRender`（`UnityMain` 线程），加入 `libhoudini` 下 `r--p` 代码页识别、延迟 `Class::Init` 与 `ModBridge` 自动重试，避免模拟器假死及长时间停留「等待热更与场景...」。
+- **官服与全渠道零硬编码动态适配**：`il2cpp_bridge` 在运行期按 ARM64 指令指纹动态解析 `libil2cpp.so` 与 `HybridCLR` 全套入口及全局槽位（告别硬编码 RVA 导致的官服 `2.2.1` 及渠道服「指纹失配」）；Java 层支持 `Activity` 继承链识别与 `Splash -> 游戏 Activity` 自动跟随挂载，并内置 `ApplicationPackageManager` 包体隐身过滤。
 - **无桌面图标**：移除 Android 桌面 `LAUNCHER` 入口（仅保留 `MODULE_SETTINGS`），不在桌面生成多余图标。
 - **5 套主题风格一键切换并记忆**：`极客赛博蓝`、`暗夜绯红`、`翡翠森境`、`琥珀黑金`、`晨曦极简白`（同步重绘悬浮球外框与配色）。
 
@@ -100,7 +101,7 @@
    adb install --no-incremental -r AresModMenu.apk
    ```
    > 注意：Android 16 等高版本请勿省略 `--no-incremental`，避免增量安装引起作用域失效。模块已隐藏桌面启动图标，安装后不会在桌面生成多余入口。
-3. 打开 **LSPosed / Vector 管理器** → 模块列表启用 `AresModMenu`（`com.android.support`）→ 勾选你安装的《阿瑞斯病毒2》（模块已内置 `@array/xposed_scope` 自动匹配官服 `com.zzonegame.aresvirus2.android`、OPPO、vivo、小米、九游、B站、华为、4399、TapTap、好游快爆、应用宝等主流渠道服，亦支持手动勾选任意其他渠道服包名）。
+3. 打开 **LSPosed / Vector 管理器** → 模块列表启用 `AresModMenu`（`com.android.support`）→ 勾选你安装的《阿瑞斯病毒2》（模块已内置 `@array/xposed_scope` 自动匹配官服 `com.zzonegame.aresvirus2.android`、OPPO、vivo、小米、九游、B站、华为、4399、TapTap、好游快爆、应用宝等主流渠道服，亦支持手动勾选任意其他渠道服包名）。若设备上使用了 **隐藏应用列表（HideMyApplist）**，请记得同时为对应渠道包名启用白名单/作用域隔离。
 4. 强行停止并启动游戏，点击屏幕左上角 `"MOD"` 悬浮球即可呼出控制台（支持自由拖拽位置；如点击「隐藏」，点击原悬浮球位置即可重新呼出）。
 
 ---

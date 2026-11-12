@@ -3,6 +3,11 @@ package com.android.support;
 import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.content.pm.VersionedPackage;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -13,6 +18,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -46,8 +53,152 @@ public class XposedEntry implements IXposedHookLoadPackage {
 
     private static boolean isUnityGameActivity(Activity a) {
         if (a == null) return false;
-        String cn = a.getClass().getName();
-        return cn.contains("UnityPlayer") || cn.contains("aresvirus");
+        for (Class<?> c = a.getClass(); c != null && c != Activity.class; c = c.getSuperclass()) {
+            String cn = c.getName();
+            if (cn.contains("UnityPlayer") || cn.contains("aresvirus")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isHiddenToolPkg(String p) {
+        if (p == null || p.isEmpty()) return false;
+        if (p.equals(sCurrentPkg)) return false;
+        if (p.startsWith("com.heytap.") || p.startsWith("com.oppo.") || p.startsWith("com.coloros.")
+                || p.startsWith("com.huawei.") || p.startsWith("com.xiaomi.") || p.startsWith("com.miui.")
+                || p.startsWith("com.vivo.") || p.startsWith("com.tencent.") || p.startsWith("com.bilibili.")
+                || p.startsWith("com.m4399.") || p.startsWith("com.taptap") || p.startsWith("com.qcplay.")) {
+            return false;
+        }
+        String lp = p.toLowerCase();
+        return "com.android.support".equals(lp)
+                || lp.contains("aresmod")
+                || lp.contains("hidemyapplist")
+                || lp.contains("magisk")
+                || lp.contains("huskydg")
+                || lp.contains("topjohnwu")
+                || lp.contains("kernelsu")
+                || lp.contains("apatch")
+                || lp.contains("lsposed")
+                || lp.contains("lspatch")
+                || lp.contains("vector.manager")
+                || lp.contains("xposed")
+                || lp.contains("edxposed")
+                || lp.contains("shamiko")
+                || lp.contains("zygisk")
+                || lp.contains("riru")
+                || lp.contains("ggmcp")
+                || lp.contains("gameguardian")
+                || lp.contains("frida")
+                || lp.contains("bin.mt.plus")
+                || lp.contains("reqable")
+                || lp.contains("httpcanary")
+                || lp.contains("luckypatcher")
+                || lp.contains("cheatengine")
+                || lp.contains("supersu")
+                || lp.contains("superuser");
+    }
+
+    private static boolean isCalledBySelfModule() {
+        for (StackTraceElement e : Thread.currentThread().getStackTrace()) {
+            String cn = e.getClassName();
+            if (cn != null && cn.startsWith("com.android.support.")) return true;
+        }
+        return false;
+    }
+
+    private static String extractResolvePkg(ResolveInfo ri) {
+        if (ri == null) return null;
+        if (ri.activityInfo != null) return ri.activityInfo.packageName;
+        if (ri.serviceInfo != null) return ri.serviceInfo.packageName;
+        if (ri.providerInfo != null) return ri.providerInfo.packageName;
+        if (ri.resolvePackageName != null) return ri.resolvePackageName;
+        return null;
+    }
+
+    private void installPackageHideHooks(ClassLoader cl) {
+        if (!sHookedClasses.add("pm_hide")) return;
+        try {
+            Class<?> apmCls = Class.forName("android.app.ApplicationPackageManager", false, cl);
+            XC_MethodHook listFilterHook = new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!antiCheatEnabled) return;
+                    Object res = param.getResult();
+                    if (!(res instanceof List<?>)) return;
+                    List<?> src = (List<?>) res;
+                    if (src.isEmpty()) return;
+                    List<Object> filtered = null;
+                    for (int i = 0; i < src.size(); i++) {
+                        Object item = src.get(i);
+                        String pn = null;
+                        if (item instanceof PackageInfo) pn = ((PackageInfo) item).packageName;
+                        else if (item instanceof ApplicationInfo) pn = ((ApplicationInfo) item).packageName;
+                        else if (item instanceof ResolveInfo) pn = extractResolvePkg((ResolveInfo) item);
+                        if (isHiddenToolPkg(pn)) {
+                            if (filtered == null) {
+                                filtered = new ArrayList<>(src.size());
+                                for (int j = 0; j < i; j++) filtered.add(src.get(j));
+                            }
+                        } else if (filtered != null) {
+                            filtered.add(item);
+                        }
+                    }
+                    if (filtered != null) {
+                        param.setResult(filtered);
+                    }
+                }
+            };
+            for (String m : new String[] {
+                    "getInstalledPackages", "getInstalledPackagesAsUser",
+                    "getInstalledApplications", "getInstalledApplicationsAsUser",
+                    "queryIntentActivities", "queryIntentActivitiesAsUser",
+                    "queryIntentServices", "queryIntentServicesAsUser",
+                    "queryBroadcastReceivers", "queryBroadcastReceiversAsUser",
+                    "queryIntentContentProviders", "queryIntentContentProvidersAsUser"
+            }) {
+                hookAllByName(apmCls, m, listFilterHook);
+            }
+
+            XC_MethodHook singlePkgThrowHook = new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!antiCheatEnabled || param.args == null || param.args.length == 0) return;
+                    String q = null;
+                    if (param.args[0] instanceof String) q = (String) param.args[0];
+                    else if (android.os.Build.VERSION.SDK_INT >= 26 && param.args[0] instanceof VersionedPackage) {
+                        q = ((VersionedPackage) param.args[0]).getPackageName();
+                    }
+                    if (isHiddenToolPkg(q) && !isCalledBySelfModule()) {
+                        param.setThrowable(new PackageManager.NameNotFoundException(q));
+                    }
+                }
+            };
+            for (String m : new String[] {
+                    "getPackageInfo", "getPackageInfoAsUser",
+                    "getApplicationInfo", "getApplicationInfoAsUser",
+                    "getPackageGids", "getPackageUid", "getPackageUidAsUser"
+            }) {
+                hookAllByName(apmCls, m, singlePkgThrowHook);
+            }
+
+            XC_MethodHook singlePkgNullHook = new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!antiCheatEnabled || param.args == null || param.args.length == 0) return;
+                    if (param.args[0] instanceof String && isHiddenToolPkg((String) param.args[0]) && !isCalledBySelfModule()) {
+                        param.setResult(null);
+                    }
+                }
+            };
+            for (String m : new String[] { "getLaunchIntentForPackage", "getLaunchIntentSenderForPackage", "getInstallerPackageName" }) {
+                hookAllByName(apmCls, m, singlePkgNullHook);
+            }
+            XposedBridge.log(TAG + ": ApplicationPackageManager stealth hooks installed");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": pm_hide note: " + t);
+        }
     }
 
     @Override
@@ -66,6 +217,7 @@ public class XposedEntry implements IXposedHookLoadPackage {
         }
         sCurrentPkg = pkg;
         XposedBridge.log(TAG + ": hooking " + pkg + " proc=" + lpparam.processName);
+        installPackageHideHooks(lpparam.classLoader);
 
         // Unity 不透明窗口会把 SurfaceView 抬到窗口之上，窗口内任何 View 都被盖住
         try {
@@ -92,19 +244,42 @@ public class XposedEntry implements IXposedHookLoadPackage {
                                 } catch (Throwable t) {
                                     XposedBridge.log(TAG + ": install failed: " + t);
                                 }
-                            } else if (isUnityGameActivity(act) && sMenuActivity != act) {
-                                // 兼容部分渠道服先启动 SplashActivity 再跳转 UnityPlayerActivity 的流程
+                            } else if (sMenuActivity != act && (isUnityGameActivity(act) || !isActivityAlive(sMenuActivity))) {
+                                // 兼容部分渠道服先启动 SplashActivity 再跳转游戏 Activity 的流程
                                 new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
                                     @Override
                                     public void run() {
-                                        attachMenuIfNeeded(act);
+                                        if (isActivityAlive(act)) {
+                                            attachMenuIfNeeded(act);
+                                        }
                                     }
-                                }, 1200);
+                                }, 800);
                             }
                             inspectAntiCheatJava(act);
                         }
                     });
-            XposedBridge.log(TAG + ": Activity.onCreate hooked");
+            XposedHelpers.findAndHookMethod("android.app.Activity", lpparam.classLoader,
+                    "onResume", new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            final Activity act = (Activity) param.thisObject;
+                            if (!loaded || act == null || !isActivityAlive(act)) return;
+                            if (isUnityGameActivity(act) || !isActivityAlive(sCurrentActivity)) {
+                                sCurrentActivity = act;
+                            }
+                            if (sMenuActivity != act && (isUnityGameActivity(act) || !isActivityAlive(sMenuActivity))) {
+                                new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (isActivityAlive(act) && sMenuActivity != act) {
+                                            attachMenuIfNeeded(act);
+                                        }
+                                    }
+                                }, 400);
+                            }
+                        }
+                    });
+            XposedBridge.log(TAG + ": Activity.onCreate & onResume hooked");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": hook failed: " + t);
         }

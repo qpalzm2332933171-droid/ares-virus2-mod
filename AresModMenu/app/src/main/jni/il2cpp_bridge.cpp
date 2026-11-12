@@ -84,6 +84,8 @@ typedef char*  (*Fn_format_exc)(void*, char*, int);
 typedef char*  (*Fn_format_trace)(void*, char*, int);
 typedef void** (*Fn_get_assemblies)(void*, size_t*);
 typedef void*  (*Fn_class_from_name)(void*, const char*, const char*);
+typedef void*  (*Fn_thread_current)();
+typedef void*  (*Fn_string_new)(const char*);
 
 static Fn_domain_get    p_domain_get     = nullptr;
 static Fn_thread_attach p_thread_attach  = nullptr;
@@ -94,14 +96,31 @@ static Fn_value_box     p_value_box      = nullptr;
 static Fn_header_size   p_header_size    = nullptr;
 static Fn_format_exc    p_format_exc     = nullptr;
 static Fn_format_trace  p_format_trace   = nullptr;
-static Fn_get_assemblies p_get_assemblies = nullptr;
+static Fn_get_assemblies  p_get_assemblies  = nullptr;
 static Fn_class_from_name p_class_from_name = nullptr;
+static Fn_thread_current  p_thread_current  = nullptr;
+static Fn_string_new      p_string_new      = nullptr;
 
 static uintptr_t g_base   = 0;
 static void*     g_domain = nullptr;
 static bool      g_ready  = false;
 static bool      g_inited = false;
 static thread_local bool t_attached = false;
+
+// 运行时按指令指纹动态解析出的 IL2CPP / HybridCLR RVA（兼容官服与全部渠道服构建）
+static uintptr_t g_rva_domain_ptr        = 0;
+static uintptr_t g_rva_runtime_invoke    = 0;
+static uintptr_t g_rva_class_init        = 0;
+static uintptr_t g_rva_foreach_heap      = 0;
+static uintptr_t g_rva_domain_stub       = 0;
+static uintptr_t g_rva_get_assemblies    = 0;
+static uintptr_t g_rva_class_from_name   = 0;
+static uintptr_t g_rva_thread_attach     = 0;
+static uintptr_t g_rva_thread_current    = 0;
+static uintptr_t g_rva_string_new        = 0;
+static uintptr_t g_rva_typeinfo_table    = 0;
+static uintptr_t g_rva_interp_exec       = 0;
+static uintptr_t g_rva_interp_image_load = 0;
 
 // 诊断开关（只在 probe 阶段打开，生产路径默认关，避免日志洪水）
 static volatile bool g_traceInvoke = false;   // invoke 逐行打日志，定位卡在哪一步
@@ -259,15 +278,17 @@ static bool is_readable_fresh(uintptr_t addr, size_t len) {
 //   （mod_hooks.cpp 第一版就是这么写的，等于所有目标都判成 no-aot。此处统一改走 /proc/self/maps。）
 static bool is_houdini_guest() {
     // Under libhoudini (x86_64 emulators like MuMu), libil2cpp.so guest code pages are mapped r--p (no x bit).
-    // On native ARM64 devices, il2cpp_thread_current (g_base + 0xa93074) is mapped r-xp.
-    return g_base && !mapped(g_base + 0xa93074, 4, 3) && mapped(g_base + 0xa93074, 4, 1);
+    // On native ARM64 devices, IL2CPP .text code pages are mapped r-xp.
+    uintptr_t probe = g_rva_thread_current ? (g_base + g_rva_thread_current)
+                    : (g_rva_runtime_invoke ? (g_base + g_rva_runtime_invoke) : 0);
+    return g_base && probe && !mapped(probe, 4, 3) && mapped(probe, 4, 1);
 }
 
 bool is_executable(uintptr_t addr) {
     if (mapped(addr, 4, 3)) return true;
     return is_houdini_guest()
         && addr >= g_base + 0x00400000ull
-        && addr <  g_base + 0x03300000ull
+        && addr <  g_base + 0x04000000ull
         && mapped(addr, 4, 1);
 }
 
@@ -310,23 +331,172 @@ static void set_error(const char* fmt, ...) {
 //    class_init    base + 0xa8e574   Class::Init(klass)
 //    foreach_heap  base + 0xa60f08   il2cpp_gc_foreach_heap 桩体（直接可调，签名 (cb,ud)）
 //
-// 每个 RVA 都带首指令指纹校验：与 dump 里读到的不一致就拒绝初始化。这样游戏一更新、
-// RVA 漂了，只会打一行错并保持沉默，绝不会带着错偏移跳进去把进程打崩。
-static const uintptr_t RVA_DOMAIN_PTR    = 0x36b8ef0;
-static const uintptr_t RVA_RUNTIME_INVOKE = 0xaa0e90;
-static const uintptr_t RVA_CLASS_INIT     = 0xa8e574;
-static const uintptr_t RVA_FOREACH_HEAP   = 0xa60f08;
-static const uintptr_t RVA_DOMAIN_STUB    = 0xa60ca4;
-static const uintptr_t RVA_GET_ASSEMBLIES = 0xa60cb0;   // il2cpp_domain_get_assemblies(domain,&n) -> Il2CppAssembly**
-static const uintptr_t RVA_CLASS_FROM_NAME = 0xa606b0;  // il2cpp_class_from_name(image, ns, name) -> Il2CppClass*
-static const uintptr_t RVA_THREAD_ATTACH  = 0xa61124;   // -> 0xaa4bc0
-static const uintptr_t RVA_THREAD_ATTACH_BODY = 0xaa4bc0;
+// ==================================================================== 动态 RVA 解析（零硬编码）
+// 官服(2.2.1)与各渠道服(2.2.0等)的 libil2cpp.so 基址及内部偏移存在数 KB~数 MB 漂移，
+// 且部分符号名会被 HTProtect 在 .dynsym 中重命名；统一通过可读 .text 段 ARM64 指令指纹
+// 一次性动态定位全部入口与全局变量槽，兼容任意渠道服与热更新母包构建。
 
-// 首 4 字节（从 dump/il2cpp/dump_il2cpp 逐字节读出）
-static const uint32_t SIG_RUNTIME_INVOKE = 0xa9bd57f6u;  // stp x22,x21,[sp,#-0x30]!
-static const uint32_t SIG_CLASS_INIT     = 0xd10103ffu;  // sub sp,sp,#0x40
-static const uint32_t SIG_FOREACH_HEAP   = 0xd10083ffu;  // sub sp,sp,#0x20
-static const uint32_t SIG_DOMAIN_STUB    = 0x1400c8b1u;  // b  #0xa92f68
+static inline uintptr_t decode_b_target(uint32_t w, uintptr_t rva) {
+    if ((w & 0xfc000000u) != 0x14000000u) return 0;
+    int32_t imm = (int32_t) (w & 0x03ffffffu);
+    if (imm & 0x02000000) imm -= 0x04000000;
+    return (uintptr_t) ((intptr_t) rva + (intptr_t) imm * 4);
+}
+
+static uintptr_t find_adrp_ldr64_rva(uintptr_t start_rva, size_t max_insns) {
+    uint64_t page[31] = {};
+    bool has_page[31] = {};
+    for (size_t k = 0; k < max_insns; ++k) {
+        uintptr_t pc = start_rva + k * 4;
+        if (!mapped(g_base + pc, 4, 1)) break;
+        uint32_t insn = *(const uint32_t*) (g_base + pc);
+        if ((insn & 0x9f000000u) == 0x90000000u) {
+            uint32_t rd = insn & 31u;
+            if (rd < 31u) {
+                int64_t imm = (int64_t) ((((insn >> 5) & 0x7ffffu) << 2) | ((insn >> 29) & 3u));
+                if (imm & 0x100000) imm -= 0x200000;
+                page[rd] = (uint64_t) ((int64_t) (pc & ~0xfffULL) + (imm << 12));
+                has_page[rd] = true;
+            }
+        } else if ((insn & 0xffc00000u) == 0xf9400000u) {
+            uint32_t rt = insn & 31u;
+            uint32_t rn = (insn >> 5) & 31u;
+            uint32_t imm12 = (insn >> 10) & 0xfffu;
+            if (rn < 31u && has_page[rn]) {
+                uintptr_t target = (uintptr_t) (page[rn] + (uint64_t) imm12 * 8ULL);
+                if (target >= 0x01000000ull && target < 0x06000000ull) return target;
+            }
+            if (rt < 31u) has_page[rt] = false;
+        }
+    }
+    return 0;
+}
+
+static bool resolve_il2cpp_rvas() {
+    if (!g_base) return false;
+    if (g_rva_runtime_invoke && g_rva_domain_ptr && g_rva_domain_stub && g_rva_class_from_name
+        && g_rva_thread_attach && g_rva_string_new && g_rva_interp_exec && g_rva_interp_image_load) {
+        return true;
+    }
+
+    const uintptr_t scanStart = 0x00200000ull;
+    const uintptr_t scanEnd   = 0x02200000ull;
+    bool pageOk = false;
+
+    for (uintptr_t rva = scanStart; rva < scanEnd; rva += 4) {
+        if ((rva & 0xfffu) == 0) {
+            pageOk = mapped(g_base + rva, 0x1000, 1);
+            if (!pageOk) { rva += 0xffc; continue; }
+        }
+        if ((rva & 0xfffu) > 0xfb0u && !mapped(g_base + rva, 80, 1)) continue;
+
+        const uint32_t* w = (const uint32_t*) (g_base + rva);
+
+        if (!g_rva_domain_stub
+            && (w[0] & 0xfc000000u) == 0x14000000u
+            && w[1] == 0xaa0103e0u
+            && (w[2] & 0xfc000000u) == 0x14000000u
+            && w[3] == 0xf81e0ff3u && w[4] == 0xa9017bfdu
+            && w[5] == 0x910043fdu && w[6] == 0xaa0103f3u) {
+            uintptr_t body = decode_b_target(w[0], rva);
+            uintptr_t dp = body ? find_adrp_ldr64_rva(body, 16) : 0;
+            if (dp) {
+                g_rva_domain_stub    = rva;
+                g_rva_get_assemblies = rva + 0x0C;
+                g_rva_domain_ptr     = dp;
+            }
+        } else if (!g_rva_foreach_heap
+            && w[0] == 0xd10083ffu && w[1] == 0xa9017bfdu && w[2] == 0x910043fdu
+            && w[3] == 0xa90007e0u
+            && (w[4] & 0x9f00001fu) == 0x90000001u
+            && (w[5] & 0xffc003ffu) == 0xf9400021u) {
+            g_rva_foreach_heap = rva;
+        } else if (!g_rva_class_init
+            && w[0] == 0xd10103ffu && w[1] == 0xa90157f6u && w[2] == 0xa9024ff4u
+            && w[3] == 0xa9037bfdu && w[4] == 0x9100c3fdu && w[5] == 0x79423808u
+            && w[6] == 0xaa0003f3u && w[7] == 0x35000068u && w[8] == 0x3944ba68u
+            && w[9] == 0x34000588u) {
+            g_rva_class_init = rva;
+        } else if (!g_rva_runtime_invoke
+            && w[0] == 0xa9bd57f6u && w[1] == 0xa9014ff4u && w[2] == 0xa9027bfdu
+            && w[3] == 0x910083fdu && w[4] == 0xaa0303f3u && w[5] == 0xaa0203f4u
+            && w[6] == 0xaa0103f5u && w[7] == 0xaa0003f6u && w[8] == 0xb4000083u
+            && w[9] == 0xaa1303e0u && w[10] == 0xaa1f03e1u
+            && (w[11] & 0xfc000000u) == 0x94000000u
+            && w[12] == 0xaa1603e0u
+            && (w[13] & 0xfc000000u) == 0x94000000u
+            && w[14] == 0x394112c8u && w[15] == 0x36200108u) {
+            g_rva_runtime_invoke = rva;
+        } else if (!g_rva_class_from_name
+            && w[0] == 0x14000001u && w[1] == 0xd10243ffu && w[2] == 0xa90657f6u
+            && w[3] == 0xa9074ff4u && w[4] == 0xa9087bfdu && w[5] == 0x910203fdu
+            && w[6] == 0xaa0003f3u && w[7] == 0xf9401800u && w[8] == 0xaa0203f4u
+            && w[9] == 0xaa0103f5u && (w[12] & 0xfc000000u) == 0x94000000u
+            && w[13] == 0xf9401a60u) {
+            g_rva_class_from_name = rva;
+        } else if (!g_rva_thread_attach
+            && w[0] == 0xd10103ffu && w[1] == 0xa90157f6u && w[2] == 0xa9024ff4u
+            && w[3] == 0xa9037bfdu && w[4] == 0x9100c3fdu
+            && (w[5] & 0x9f00001fu) == 0x90000008u
+            && (w[6] & 0xffc003ffu) == 0xf9400108u
+            && w[7] == 0xaa0003f3u && w[8] == 0xb9400108u && w[9] == 0x2a0803e0u
+            && (w[10] & 0xfc000000u) == 0x94000000u
+            && w[11] == 0xaa0003f4u && w[12] == 0xb5000660u
+            && w[13] == 0x910033e0u && w[14] == 0xb9000fffu) {
+            g_rva_thread_attach = rva;
+        } else if (!g_rva_thread_current
+            && (w[0] & 0x9f00001fu) == 0x90000008u
+            && (w[1] & 0xffc003ffu) == 0xf9400108u
+            && w[2] == 0xb9400100u
+            && (w[3] & 0xfc000000u) == 0x14000000u
+            && w[4] == 0xa9bf7bfdu && w[5] == 0x910003fdu) {
+            g_rva_thread_current = rva;
+        } else if (!g_rva_string_new
+            && w[0] == 0xf81e0ff3u && w[1] == 0xa9017bfdu && w[2] == 0x910043fdu
+            && w[3] == 0xaa0003f3u && (w[4] & 0xfc000000u) == 0x94000000u
+            && w[5] == 0xa9417bfdu && w[6] == 0xaa0003e1u && w[7] == 0xaa1303e0u
+            && w[8] == 0xf84207f3u && w[9] == 0x17ffffcdu && w[10] == 0xa9bd57f6u
+            && w[11] == 0xa9014ff4u) {
+            g_rva_string_new = rva;
+        } else if (!g_rva_typeinfo_table
+            && w[0] == 0xd10143ffu && w[1] == 0xa9015ff8u && w[2] == 0xa90257f6u
+            && w[3] == 0xa9034ff4u && w[4] == 0xa9047bfdu && w[5] == 0x910103fdu
+            && w[6] == 0x2a0003f3u && w[7] == 0x3100041fu && w[8] == 0x54000140u
+            && w[9] == 0x531c7e68u && w[10] == 0x34000108u && w[11] == 0x2a1303e0u) {
+            g_rva_typeinfo_table = find_adrp_ldr64_rva(rva, 32);
+        } else if (!g_rva_interp_exec
+            && w[0] == 0xa9ba6ffcu && w[1] == 0xa90167fau && w[2] == 0xa9025ff8u
+            && w[3] == 0xa90357f6u && w[4] == 0xa9044ff4u && w[5] == 0xa9057bfdu
+            && w[6] == 0x910143fdu && w[7] == 0xd14007ffu && w[8] == 0xd11043ffu
+            && w[9] == 0xaa0203f3u && w[10] == 0xaa0103f4u && w[11] == 0xaa0003f5u) {
+            g_rva_interp_exec = rva;
+        } else if (!g_rva_interp_image_load
+            && (w[0] & 0x9f00001fu) == 0x90000011u
+            && (w[1] & 0xffc003ffu) == 0x91000231u
+            && w[2] == 0xd61f0220u && w[3] == 0x320003e9u && w[4] == 0x39058009u
+            && w[5] == 0xaa0803e0u && (w[6] & 0xfc000000u) == 0x14000000u
+            && w[7] == 0xa9bf7bfdu && w[8] == 0x910003fdu) {
+            g_rva_interp_image_load = rva;
+        }
+
+        if (g_rva_domain_ptr && g_rva_runtime_invoke && g_rva_class_init
+            && g_rva_foreach_heap && g_rva_domain_stub && g_rva_class_from_name
+            && g_rva_thread_attach && g_rva_thread_current && g_rva_string_new
+            && g_rva_typeinfo_table && g_rva_interp_exec && g_rva_interp_image_load) {
+            break;
+        }
+    }
+
+    LOGI("resolve_rvas: base=%p domain=%#lx invoke=%#lx init=%#lx heap=%#lx stub=%#lx cfn=%#lx ta=%#lx tc=%#lx sn=%#lx ti=%#lx iexec=%#lx iload=%#lx",
+         (void*) g_base, (unsigned long) g_rva_domain_ptr, (unsigned long) g_rva_runtime_invoke,
+         (unsigned long) g_rva_class_init, (unsigned long) g_rva_foreach_heap,
+         (unsigned long) g_rva_domain_stub, (unsigned long) g_rva_class_from_name,
+         (unsigned long) g_rva_thread_attach, (unsigned long) g_rva_thread_current,
+         (unsigned long) g_rva_string_new, (unsigned long) g_rva_typeinfo_table,
+         (unsigned long) g_rva_interp_exec, (unsigned long) g_rva_interp_image_load);
+
+    return g_rva_runtime_invoke != 0 && g_rva_domain_ptr != 0;
+}
 
 // 取 so 加载基址：maps 里文件偏移最小那一段的起点。不经过 linker，零 dlopen/dlsym。
 static uintptr_t find_module_base(const char* soname) {
@@ -351,23 +521,17 @@ static uintptr_t find_module_base(const char* soname) {
     return best;
 }
 
-static bool sig_ok(uintptr_t addr, uint32_t want) {
-    if (!mapped(addr, 4, 1)) return false;
-    return *(volatile uint32_t*) addr == want;
-}
-
 static void ensure_thread() {
     // 所有 invoke 都从 UnityMain 线程（IL2CPP 初始化时已 attach）发起；
-    // 先用 il2cpp_thread_current (0xa93074) 判当前线程是否已 attach，已 attach 则零调用直接返回。
+    // 先用动态解析的 il2cpp_thread_current 判当前线程是否已 attach，已 attach 则零调用直接返回。
     if (t_attached || !p_thread_attach || !g_domain) {
         if (g_traceInvoke)
             LOGI("ensure_thread: skip (t_attached=%d fn=%p domain=%p)",
                  (int) t_attached, (void*) p_thread_attach, g_domain);
         return;
     }
-    if (g_base && is_executable(g_base + 0xa93074)) {
-        typedef void* (*Fn_tc)();
-        void* cur = ((Fn_tc) (g_base + 0xa93074))();
+    if (p_thread_current && is_executable((uintptr_t) p_thread_current)) {
+        void* cur = p_thread_current();
         if (cur) {
             t_attached = true;
             LOGI("ensure_thread: already attached on UnityMain (%p)", cur);
@@ -383,48 +547,44 @@ static void ensure_thread() {
 bool init() {
     std::lock_guard<std::mutex> lk(g_mtx);
     if (g_inited) return g_ready;
-    // 失败时不置 g_inited，允许 il2cpp 起来后重试
+    // 失败时不置 g_inited，允许 il2cpp 解密并起来后重试
 
     if (!g_base) g_base = find_module_base("/libil2cpp.so");
     if (!g_base) { LOGI("init: libil2cpp.so 还没映射，稍后重试"); return false; }
 
-    // ---- 指纹门禁：RVA 与这份 so 对不上就一份钱都不花
-    //      （失败原因只在 static 变量里留一次日志，因为本函数可能每秒被调一次）
-    if (!sig_ok(g_base + RVA_RUNTIME_INVOKE, SIG_RUNTIME_INVOKE)) {
-        static bool once = false;
-        if (!once) {
-            once = true;
-            LOGE("init: 指纹失配 base=%p probe@%p 期望 0x%08x 实际 0x%08x",
-                 (void*) g_base, (void*) (g_base + RVA_RUNTIME_INVOKE),
-                 (unsigned) SIG_RUNTIME_INVOKE,
-                 (unsigned) u32_at(g_base + RVA_RUNTIME_INVOKE));
+    if (!resolve_il2cpp_rvas()) {
+        static int s_failCnt = 0;
+        if (s_failCnt++ < 5) {
+            LOGI("init: 动态指纹解析尚未就绪（易盾解密或初始化进行中），稍后重试");
         }
-        set_error("RVA 失配: Runtime::Invoke @+0x%lx 首指令不是 0x%08x（游戏版本变了？）",
-                  (unsigned long) RVA_RUNTIME_INVOKE, SIG_RUNTIME_INVOKE);
+        set_error("动态解析 IL2CPP 入口尚未就绪");
         return false;
     }
-    bool have_stub  = sig_ok(g_base + RVA_DOMAIN_STUB,  SIG_DOMAIN_STUB);
-    bool have_init  = sig_ok(g_base + RVA_CLASS_INIT,   SIG_CLASS_INIT);
-    bool have_heap  = sig_ok(g_base + RVA_FOREACH_HEAP, SIG_FOREACH_HEAP);
+
+    bool have_stub  = g_rva_domain_stub != 0;
+    bool have_init  = g_rva_class_init  != 0;
+    bool have_heap  = g_rva_foreach_heap != 0;
 
     // ---- domain：纯读全局，不调用任何函数
-    uintptr_t addr_domain = g_base + RVA_DOMAIN_PTR;
+    uintptr_t addr_domain = g_base + g_rva_domain_ptr;
     if (!mapped(addr_domain, 8, 1)) {
-        set_error("domain 全局 @+0x%lx 不可读", (unsigned long) RVA_DOMAIN_PTR);
+        set_error("domain 全局 @+0x%lx 不可读", (unsigned long) g_rva_domain_ptr);
         return false;
     }
     void* d = *(void**) addr_domain;
     if (!d) { LOGI("init: domain 尚未建立（IL2CPP 还没初始化），稍后重试"); return false; }
     g_domain = d;
 
-    // ---- 入口一律 base+RVA
-    p_invoke          = (Fn_invoke)         (g_base + RVA_RUNTIME_INVOKE);
-    p_foreach_heap    = have_heap ? (Fn_foreach_heap) (g_base + RVA_FOREACH_HEAP) : nullptr;
-    p_class_init      = have_init ? (Fn_class_init)   (g_base + RVA_CLASS_INIT)   : nullptr;
-    p_domain_get      = have_stub ? (Fn_domain_get)   (g_base + RVA_DOMAIN_STUB)  : nullptr;
-    p_get_assemblies  = (Fn_get_assemblies) (g_base + RVA_GET_ASSEMBLIES);
-    p_class_from_name = (Fn_class_from_name)(g_base + RVA_CLASS_FROM_NAME);
-    p_thread_attach   = (Fn_thread_attach)  (g_base + RVA_THREAD_ATTACH);   // 桩 → b 0xaa4bc0
+    // ---- 入口一律 base + 动态解析出的 RVA
+    p_invoke          = (Fn_invoke)         (g_base + g_rva_runtime_invoke);
+    p_foreach_heap    = have_heap ? (Fn_foreach_heap) (g_base + g_rva_foreach_heap) : nullptr;
+    p_class_init      = have_init ? (Fn_class_init)   (g_base + g_rva_class_init)   : nullptr;
+    p_domain_get      = have_stub ? (Fn_domain_get)   (g_base + g_rva_domain_stub)  : nullptr;
+    p_get_assemblies  = g_rva_get_assemblies  ? (Fn_get_assemblies) (g_base + g_rva_get_assemblies)  : nullptr;
+    p_class_from_name = g_rva_class_from_name ? (Fn_class_from_name)(g_base + g_rva_class_from_name) : nullptr;
+    p_thread_attach   = g_rva_thread_attach   ? (Fn_thread_attach)  (g_base + g_rva_thread_attach)   : nullptr;
+    p_thread_current  = g_rva_thread_current  ? (Fn_thread_current) (g_base + g_rva_thread_current)  : nullptr;
+    p_string_new      = g_rva_string_new      ? (Fn_string_new)     (g_base + g_rva_string_new)      : nullptr;
     p_value_box       = nullptr;
     p_header_size     = nullptr;
     p_format_exc      = nullptr;
@@ -435,10 +595,11 @@ bool init() {
     ensure_thread();
     g_ready = true;
 
-    LOGI("  have: stub=%d init=%d heap=%d  (class_init 为 NULL 时所有 Class::Init 都会被跳过，即热更类方法表永远为空)",
-         (int) have_stub, (int) have_init, (int) have_heap);
-    LOGI("init ok (ZERO dlopen2): base=%p domain=%p (read @+0x%lx) invoke=%p class_init=%p foreach_heap=%p",
-         (void*) g_base, g_domain, (unsigned long) RVA_DOMAIN_PTR,
+    LOGI("  have: stub=%d init=%d heap=%d cfn=%d sn=%d tc=%d  (class_init 为 NULL 时所有 Class::Init 都会被跳过)",
+         (int) have_stub, (int) have_init, (int) have_heap,
+         (int) (p_class_from_name != nullptr), (int) (p_string_new != nullptr), (int) (p_thread_current != nullptr));
+    LOGI("init ok (DYNAMIC ZERO-HARDCODE): base=%p domain=%p (read @+0x%lx) invoke=%p class_init=%p foreach_heap=%p",
+         (void*) g_base, g_domain, (unsigned long) g_rva_domain_ptr,
          (void*) p_invoke, (void*) p_class_init, (void*) p_foreach_heap);
     LOGI("  ptr=%p maps_first=%p  domain[0..3]=%016llx %016llx %016llx",
          (void*) p_invoke, (void*) find_module_base("/libil2cpp.so"),
@@ -881,7 +1042,8 @@ void probe_hotclass() {
     typedef void* (*Fn_static0)();
     typedef void* (*Fn_inst0)(void*);
     typedef void* (*Fn_class_from_name)(void*, const char*, const char*);
-    Fn_class_from_name cfn = (Fn_class_from_name) (g_base + 0xa606b0);   // 桩 → 0xa91170
+    Fn_class_from_name cfn = p_class_from_name;
+    if (!cfn) { LOGE("probe_rr: p_class_from_name 为空"); return; }
 
     std::lock_guard<std::mutex> lk(g_mtx);
     void* kAD = find_class_via_images_ns("AppDomain", "System");
@@ -1019,7 +1181,8 @@ static void* hot_class(const char* name) {
     void* img = hot_image();
     if (!img) return nullptr;
     typedef void* (*Fn_cfn)(void*, const char*, const char*);
-    Fn_cfn cfn = (Fn_cfn) (g_base + 0xa606b0);
+    Fn_cfn cfn = (Fn_cfn) p_class_from_name;
+    if (!cfn) return nullptr;
     void* k = cfn(img, "", name);
     if (k && p_class_init && !(u8_at((uintptr_t) k + 0x133) & 4)) p_class_init(k);
     return k;
@@ -1482,7 +1645,6 @@ bool load_patch_dll(const char* path) {
 //     hybridclr::metadata::InterpreterImage::Load(const void* data, unsigned long size)  @RVA 0xba1bd4
 //   这是纯 native 函数，Dobby 一定命中；而且它在「马上要解析 IL」的那一刻拿到原始字节，
 //   比在托管层抢更靠近终点。
-static const uintptr_t RVA_INTERP_IMAGE_LOAD = 0xba1bd4;
 static std::atomic<int> g_ilHits{0};
 typedef void* (*Fn_interp_load)(void* self, const void* data, size_t size);
 static Fn_interp_load g_origInterpLoad = nullptr;
@@ -1520,9 +1682,9 @@ static void* hk_interp_load(void* self, const void* data, size_t size) {
 void install_interp_load_hook() {
     if (g_origInterpLoad) return;
     if (!init()) return;
-    void* addr = (void*) (g_base + RVA_INTERP_IMAGE_LOAD);
-    if (!is_executable((uintptr_t) addr)) {
-        LOGE("interp_load: RVA 0x%lx 不可执行", (unsigned long) RVA_INTERP_IMAGE_LOAD);
+    void* addr = g_rva_interp_image_load ? (void*) (g_base + g_rva_interp_image_load) : nullptr;
+    if (!addr || !is_executable((uintptr_t) addr)) {
+        LOGE("interp_load: RVA 0x%lx 不可执行", (unsigned long) g_rva_interp_image_load);
         return;
     }
     void* orig = nullptr;
@@ -1731,9 +1893,10 @@ void probe_type_gettype() {
 
     typedef void* (*Fn_string_new)(const char*);
     typedef void* (*Fn_static1)(void*);
-    Fn_string_new sn = (Fn_string_new) (g_base + 0xaa7a98);
+    Fn_string_new sn = p_string_new;
+    if (!sn || !g_rva_typeinfo_table) return;
 
-    void* table = *(void**) (g_base + 0x36b8ff0);
+    void* table = *(void**) (g_base + g_rva_typeinfo_table);
     LOGI("probe_gt: s_TypeInfoTable = %p", table);
 
     const char* names[] = {
@@ -1791,12 +1954,11 @@ void probe_invoke_test() {
     // 0) 当前线程是否已被 IL2CPP attach？il2cpp_thread_current 桩 0xa61120 → 0xa93074，
     //    全 4 条：adrp x8,#0x36b9000 ; ldr x8,[x8,#0x998] ; ldr w0,[x8] ; b #0x839390（TLS 取值）。
     typedef void* (*Fn_thread_current)();
-    void* cur = ((Fn_thread_current) (g_base + 0xa93074))();
+    void* cur = p_thread_current ? p_thread_current() : nullptr;
     LOGI("probe_i: il2cpp_thread_current() = %p  (非空=当前线程已 attach)", cur);
 
     // 1) 造字符串（已实测可用）
-    typedef void* (*Fn_string_new)(const char*);
-    void* s = ((Fn_string_new) (g_base + 0xaa7a98))("hello");
+    void* s = p_string_new ? p_string_new("hello") : nullptr;
     int len = s ? (int) u32_at((uintptr_t) s + 0x10) : -1;
     LOGI("probe_i: il2cpp_string_new(\"hello\") = %p, length 字段 = %d", s, len);
     if (!s) { LOGE("probe_i: string_new 返回 NULL，放弃"); return; }
@@ -1817,8 +1979,8 @@ void probe_invoke_test() {
     // 1.5) 手动 attach，并在前后各测一次 thread_current —— 这一步直接判定 attach 是否真的生效/是否卡死
     {
         typedef void* (*Fn_tc)();
-        Fn_tc tc = (Fn_tc) (g_base + 0xa93074);
-        LOGI("probe_i: [A] before manual attach, current=%p", tc());
+        Fn_tc tc = (Fn_tc) p_thread_current;
+        LOGI("probe_i: [A] before manual attach, current=%p", tc ? tc() : nullptr);
         if (p_thread_attach && g_domain) {
             LOGI("probe_i: [B] calling il2cpp_thread_attach(%p) ...", g_domain);
             p_thread_attach(g_domain);
@@ -1865,10 +2027,10 @@ void probe_invoke_test() {
 // 把热更类型也注册进了 s_TypeInfoTable，就能直接命中 CGameSystem 之类。
 void probe_typeinfo_table() {
     if (!init()) { LOGE("probe_t: init 失败"); return; }
-    uintptr_t slot = g_base + 0x36b8ff0;
-    if (!mapped(slot, 8, 1)) { LOGE("probe_t: 槽不可读"); return; }
+    uintptr_t slot = g_rva_typeinfo_table ? (g_base + g_rva_typeinfo_table) : 0;
+    if (!slot || !mapped(slot, 8, 1)) { LOGE("probe_t: 槽不可读"); return; }
     void* table = *(void**) slot;
-    LOGI("probe_t: s_TypeInfoTable @+0x%lx = %p", (unsigned long) 0x36b8ff0, table);
+    LOGI("probe_t: s_TypeInfoTable @+0x%lx = %p", (unsigned long) g_rva_typeinfo_table, table);
     if (!table) return;
 
     const char* want[] = {"CGameSystem", "CContainerSystem", "CMaterial", "CEquipmentSystem",
@@ -2293,8 +2455,8 @@ static bool playerprefs_set_int(int32_t v) {
     if (!mi) { set_error("PlayerPrefs.SetInt/2 未找到"); return false; }
     void* mp = ptr_at((uintptr_t) mi + OFF_MI_POINTER);
     if (!mp || !is_executable((uintptr_t) mp)) { set_error("SetInt methodPointer 不可执行"); return false; }
-    typedef void* (*Fn_string_new)(const char*);
-    Fn_string_new sn = (Fn_string_new) (g_base + 0xaa7a98);   // il2cpp_string_new
+    Fn_string_new sn = p_string_new;
+    if (!sn) { set_error("string_new 未解析"); return false; }
     void* str = sn(PP_KEY);
     if (!str) { set_error("string_new 失败"); return false; }
     typedef void (*Fn_set_int_2)(void*, int32_t, void*);
@@ -2312,8 +2474,8 @@ static bool playerprefs_get_int(int32_t* out) {
     if (!mi) return false;
     void* mp = ptr_at((uintptr_t) mi + OFF_MI_POINTER);
     if (!mp || !is_executable((uintptr_t) mp)) return false;
-    typedef void* (*Fn_string_new)(const char*);
-    Fn_string_new sn = (Fn_string_new) (g_base + 0xaa7a98);
+    Fn_string_new sn = p_string_new;
+    if (!sn) return false;
     void* str = sn(PP_KEY);
     if (!str) return false;
     typedef int32_t (*Fn_get_int_2)(void*, int32_t, void*);
@@ -2430,20 +2592,18 @@ void* invoke(void* method, void* obj, Args& a, bool* exc) {
 //     每项都是「指向实参值」的指针（与 IL2CPP params 数组同构）。
 //   这解释了为什么裸调桩会崩（那 5 个方法共用 0xb89808，而 0xb89808 是抛异常桩）、
 //   也解释了为什么传 methodPointer 给 invoker 会卡死（invoker 要的是 InterpMethodInfo*）。
-static const uintptr_t RVA_INTERP_EXEC = 0xb89ef4;
-
 bool interp_invoke(void* mi, void** args, void* retBuf, bool* exc) {
     if (exc) *exc = false;
-    if (!init() || !mi) return false;
+    if (!init() || !mi || !g_rva_interp_exec) return false;
     ensure_thread();
     void* e = nullptr;
-    // 第三参不能给 NULL：实测传 nullptr 时 0xb89ef4 会在 +0x4c 处解引用 [x2+0x51]
+    // 第三参不能给 NULL：实测传 nullptr 时 Interpreter::Execute 会在 +0x4c 处解引用 [x2+0x51]
     // 直接 SIGSEGV（17:24 真机 tombstone：fault addr 0x51，x2=0）。给一块 32 字节本地缓冲，
     // 有返回值的调用再从这里读。
     uint64_t localRet[4] = {0, 0, 0, 0};
     void* rb = retBuf ? retBuf : (void*) localRet;
     typedef void (*Fn_interp)(void*, void**, void*, void**);
-    ((Fn_interp) (g_base + RVA_INTERP_EXEC))(mi, args, rb, &e);
+    ((Fn_interp) (g_base + g_rva_interp_exec))(mi, args, rb, &e);
     if (e) { log_exception(e); if (exc) *exc = true; return false; }
     return true;
 }
@@ -2677,9 +2837,9 @@ bool load_mod_bridge(const char* path) {
     s_attempts++;
     s_lastAttemptMs = now;
 
-    typedef void* (*Fn_str_new)(const char*);
     typedef void* (*Fn_static1)(void*, void*);
-    Fn_str_new strNew = (Fn_str_new) (g_base + 0xaa7a98);
+    Fn_string_new strNew = p_string_new;
+    if (!strNew) { LOGE("bridge: p_string_new null"); return false; }
     void* pStr = strNew(path);
     if (!pStr) { LOGE("bridge: strNew failed"); return false; }
 
