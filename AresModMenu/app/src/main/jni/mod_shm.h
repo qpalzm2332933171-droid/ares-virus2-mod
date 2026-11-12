@@ -80,7 +80,10 @@ struct ModShm {
     uint32_t cmdWriteIdx;    /* 0x20 */
     uint32_t cmdReadIdx;     /* 0x24 */
     uint32_t dynSeq;         /* 0x28: bumped by ModBridge when dyn JSON/icons finish writing */
-    uint8_t  pad2[20];       /* 0x2C..0x3F */
+    uint32_t cmdOkCount;     /* 0x2C: cumulative executed command successes */
+    uint32_t cmdFailCount;   /* 0x30: cumulative executed command failures */
+    int32_t  lastFailArg1;   /* 0x34: arg1 (e.g. itemId/buffId) of last failed command */
+    uint8_t  pad2[8];        /* 0x38..0x3F */
     ModCmd   cmds[32];       /* 0x40..0x43F (32 * 32 = 1024 B) */
     uint32_t propSeq;        /* 0x440 */
     int32_t  propCount;      /* 0x444 */

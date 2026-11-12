@@ -43,6 +43,16 @@ public class XposedEntry implements IXposedHookLoadPackage {
     private static boolean loaded = false;
     private static volatile Activity sCurrentActivity = null;
     private static volatile Activity sMenuActivity = null;
+    private static volatile long sFastPumpUntilMs = 0L;
+
+    public static void boostFastPump(long durationMs) {
+        long t = android.os.SystemClock.uptimeMillis() + Math.max(0L, durationMs);
+        if (t > sFastPumpUntilMs) sFastPumpUntilMs = t;
+    }
+
+    public static void clearFastPump() {
+        sFastPumpUntilMs = 0L;
+    }
     private static volatile Menu sMenu = null;
 
     private static boolean isActivityAlive(Activity a) {
@@ -470,7 +480,7 @@ public class XposedEntry implements IXposedHookLoadPackage {
                             protected void beforeHookedMethod(MethodHookParam param) {
                                 if (!nativeLoaded) return;
                                 long now = android.os.SystemClock.uptimeMillis();
-                                long interval = (probeCount < 50) ? 100L : 1000L;
+                                long interval = (now < sFastPumpUntilMs) ? 16L : ((probeCount < 50) ? 100L : 1000L);
                                 if (now - lastProbeMs >= interval) {
                                     lastProbeMs = now;
                                     probeCount++;

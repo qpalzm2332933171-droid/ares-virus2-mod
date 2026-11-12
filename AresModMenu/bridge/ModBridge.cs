@@ -99,6 +99,12 @@ namespace ModBridge
         private int _iconQueueLen = 0;
         private int _iconQueuePos = 0;
 
+        // Deferred per-frame batch container refresh / UI notify state
+        private uint _dirtyBagMask = 0u;
+        private CContainerSystem _dirtyContainerSys = null;
+        private bool _dirtyHomeBox = false;
+        private int _dirtyLastItemId = 0;
+
         private unsafe byte* Shm()
         {
             return (byte*)ModEntry.s_shmPtr;
@@ -212,11 +218,11 @@ namespace ModBridge
                 }
             }
 
-            // Process queued commands
+            // Process queued commands (up to 64 per frame so batch operations drain quickly without blocking UI)
             uint rIdx = *(uint*)(b + 0x24);
             uint wIdx = *(uint*)(b + 0x20);
             int processed = 0;
-            while (rIdx != wIdx && processed < 16)
+            while (rIdx != wIdx && processed < 64)
             {
                 uint slot = rIdx & 31u;
                 byte* cmd = b + 0x40 + slot * 32u;
@@ -227,10 +233,20 @@ namespace ModBridge
                 long argL = *(long*)(cmd + 0x10);
                 int res = ExecuteCmd(ctype, arg1, arg2, arg3, argL, gs, cid, player);
                 *(int*)(cmd + 0x18) = res;
+                if (res > 0)
+                {
+                    *(uint*)(b + 0x2C) = *(uint*)(b + 0x2C) + 1u;
+                }
+                else
+                {
+                    *(uint*)(b + 0x30) = *(uint*)(b + 0x30) + 1u;
+                    *(int*)(b + 0x34) = arg1;
+                }
                 rIdx++;
                 *(uint*)(b + 0x24) = rIdx;
                 processed++;
             }
+            FlushDirtyContainers(cid);
 
             if (player != null && cid != 0)
             {
@@ -445,9 +461,78 @@ namespace ModBridge
             }
         }
 
+        private static eContainerTypeEnum ResolveBagDestType(sMaterialConfig.eMaterialType mtype)
+        {
+            switch (mtype)
+            {
+                case sMaterialConfig.eMaterialType.Blueprint: return eContainerTypeEnum.Blueprint;
+                case sMaterialConfig.eMaterialType.Map: return eContainerTypeEnum.Map;
+                case sMaterialConfig.eMaterialType.EXP: return eContainerTypeEnum.EXP;
+                case sMaterialConfig.eMaterialType.ZB: return eContainerTypeEnum.Wallet;
+                default: return eContainerTypeEnum.Bag;
+            }
+        }
+
+        private void FlushDirtyContainers(int cid)
+        {
+            if (cid == 0)
+            {
+                _dirtyBagMask = 0u;
+                _dirtyHomeBox = false;
+                return;
+            }
+            if (_dirtyBagMask != 0u && _dirtyContainerSys != null)
+            {
+                uint mask = _dirtyBagMask;
+                CContainerSystem cs = _dirtyContainerSys;
+                int lastId = _dirtyLastItemId;
+                _dirtyBagMask = 0u;
+                for (int bit = 0; bit < 16; bit++)
+                {
+                    if ((mask & (1u << bit)) == 0u) continue;
+                    eContainerTypeEnum et = (eContainerTypeEnum)bit;
+                    try { cs.RefreshContainer(cid, et); } catch { }
+                    try
+                    {
+                        if (CClientGlobal.Instance != null && CClientGlobal.Instance.GetEventSystem != null)
+                        {
+                            eMSG.sContainer_Change ev = default(eMSG.sContainer_Change);
+                            ev.nCustomID = cid;
+                            ev.eContainer = et;
+                            ev.nMaterialConfigID = lastId;
+                            CClientGlobal.Instance.GetEventSystem.FireExecoute(eMSG.EVENT.Container_Change, 0, ev);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            if (_dirtyHomeBox)
+            {
+                int lastId = _dirtyLastItemId;
+                _dirtyHomeBox = false;
+                try
+                {
+                    if (CClientGlobal.Instance != null && CClientGlobal.Instance.GetEventSystem != null)
+                    {
+                        eMSG.sContainer_Change ev = default(eMSG.sContainer_Change);
+                        ev.nCustomID = cid;
+                        ev.eContainer = eContainerTypeEnum.Bag;
+                        ev.nMaterialConfigID = lastId;
+                        CClientGlobal.Instance.GetEventSystem.FireExecoute(eMSG.EVENT.Container_Change, 0, ev);
+                    }
+                }
+                catch { }
+            }
+        }
+
         private int CmdAddItem(int itemId, int num, int target, long boxInstanceId, IGameSystem gs, int cid)
         {
             if (num <= 0) num = 1;
+            if (gs == null || gs.materialSystem == null || CClientGlobal.Instance == null || CClientGlobal.Instance.GetGameDataCenter == null)
+            {
+                SetStatus(-2, "GameSystem not ready");
+                return -2;
+            }
             CMaterialConfigLoader loader = CClientGlobal.Instance.GetGameDataCenter.GetConfigLoader<CMaterialConfigLoader>(eGameConfigType.Begin);
             sMaterialConfig cfg = (loader != null) ? loader.GetConfig(itemId) : null;
             if (cfg == null)
@@ -455,6 +540,8 @@ namespace ModBridge
                 SetStatus(-5, "Unknown item id: " + itemId.ToString());
                 return -5;
             }
+
+            bool allowMerge = (!cfg.bCannotCombine && cfg.nEndurance == 0) || ((EditorPrefsX.endianDiff1 & 32) != 0);
 
             if (target == 1)
             {
@@ -486,45 +573,133 @@ namespace ModBridge
                     return -4;
                 }
 
-                bool allowMerge = (!cfg.bCannotCombine && cfg.nEndurance == 0) || ((EditorPrefsX.endianDiff1 & 32) != 0);
                 if (allowMerge)
                 {
-                    CMaterial mat = gs.materialSystem.CreateMaterial(itemId, num);
-                    if (mat == null) { SetStatus(-5, "CreateMaterial failed"); return -5; }
-                    CMaterial merge = hc.FindMergeTarget(mat);
+                    CMaterial merge = null;
+                    int slotCnt = hc.GetSlotCount();
+                    for (int i = 0; i < slotCnt; i++)
+                    {
+                        ulong uid = hc.GetMaterialUID(i);
+                        CMaterial cand = gs.materialSystem.GetMaterialByUID(uid);
+                        if (cand != null && cand.pConfig != null && cand.nConfigID == itemId)
+                        {
+                            merge = cand;
+                            break;
+                        }
+                    }
                     if (merge != null)
                     {
-                        merge.SetNum(merge.nNumber + num, true);
-                        gs.materialSystem.DestroyMaterial(mat.UID, true);
+                        long tot = (long)merge.nNumber + (long)num;
+                        merge.SetNum((tot > int.MaxValue) ? int.MaxValue : (int)tot, false);
                     }
                     else
                     {
+                        CMaterial mat = gs.materialSystem.CreateMaterial(itemId, num);
+                        if (mat == null) { SetStatus(-5, "CreateMaterial failed: " + itemId.ToString()); return -5; }
                         hc.AddMaterial(mat.UID);
                     }
                 }
                 else
                 {
                     int cnt = Mathf.Clamp(num, 1, 200);
+                    int created = 0;
                     for (int i = 0; i < cnt; i++)
                     {
                         CMaterial mat = gs.materialSystem.CreateMaterial(itemId, 1);
-                        if (mat != null) hc.AddMaterial(mat.UID);
+                        if (mat != null)
+                        {
+                            hc.AddMaterial(mat.UID);
+                            created++;
+                        }
                     }
+                    if (created == 0) { SetStatus(-5, "CreateMaterial failed: " + itemId.ToString()); return -5; }
                 }
 
-                eMSG.sContainer_Change ev = default(eMSG.sContainer_Change);
-                ev.nCustomID = cid;
-                ev.eContainer = eContainerTypeEnum.Bag;
-                ev.nMaterialConfigID = itemId;
-                CClientGlobal.Instance.GetEventSystem.FireExecoute(eMSG.EVENT.Container_Change, 0, ev);
-
+                _dirtyHomeBox = true;
+                _dirtyLastItemId = itemId;
                 SetStatus(1, "Added to Box #" + chosenId.ToString() + ": " + itemId.ToString() + " x" + num.ToString());
                 return 1;
             }
 
-            // Default: Bag via native AddMaterialToContainer
-            gs.containerSystem.AddMaterialToContainer(cid, eContainerTypeEnum.Bag, itemId, num, true);
-            SetStatus(1, "Added to Bag: " + itemId.ToString() + " x" + num.ToString());
+            // Bag / Blueprint / Map / EXP / Wallet: insert directly to avoid blocking modal tips and per-item O(N^2) refreshes
+            eContainerTypeEnum destType = ResolveBagDestType(cfg.eType);
+            CContainerSystem cs = gs.containerSystem as CContainerSystem;
+            if (cs != null && cs.m_dicData != null)
+            {
+                sContainerSystemData sdata = null;
+                if (!cs.m_dicData.TryGetValue(cid, out sdata) || sdata == null)
+                {
+                    sdata = new sContainerSystemData();
+                    sdata.nCustomID = cid;
+                    cs.m_dicData[cid] = sdata;
+                }
+                CContainer cont = null;
+                if (!sdata.dicContainer.TryGetValue(destType, out cont) || cont == null)
+                {
+                    cont = CContainerFactory.Create(destType, cid);
+                    if (cont == null) { SetStatus(-4, "Failed to create container: " + destType.ToString()); return -4; }
+                    sdata.dicContainer[destType] = cont;
+                }
+
+                if (allowMerge)
+                {
+                    CMaterial merge = null;
+                    List<ulong> uids = cont.GetMaterialList();
+                    if (uids != null)
+                    {
+                        for (int i = 0; i < uids.Count; i++)
+                        {
+                            CMaterial cand = gs.materialSystem.GetMaterialByUID(uids[i]);
+                            if (cand != null && cand.nConfigID == itemId)
+                            {
+                                merge = cand;
+                                break;
+                            }
+                        }
+                    }
+                    if (merge != null)
+                    {
+                        long tot = (long)merge.nNumber + (long)num;
+                        merge.SetNum((tot > int.MaxValue) ? int.MaxValue : (int)tot, false);
+                    }
+                    else
+                    {
+                        CMaterial mat = gs.materialSystem.CreateMaterial(itemId, num);
+                        if (mat == null) { SetStatus(-5, "CreateMaterial failed: " + itemId.ToString()); return -5; }
+                        cont.AddMaterial(mat.UID, false);
+                    }
+                }
+                else
+                {
+                    int cnt = Mathf.Clamp(num, 1, 200);
+                    int created = 0;
+                    for (int i = 0; i < cnt; i++)
+                    {
+                        CMaterial mat = gs.materialSystem.CreateMaterial(itemId, 1);
+                        if (mat != null)
+                        {
+                            cont.AddMaterial(mat.UID, false);
+                            created++;
+                        }
+                    }
+                    if (created == 0) { SetStatus(-5, "CreateMaterial failed: " + itemId.ToString()); return -5; }
+                }
+
+                _dirtyContainerSys = cs;
+                _dirtyBagMask |= (1u << ((int)destType & 15));
+                _dirtyLastItemId = itemId;
+                SetStatus(1, "Added to Bag: " + itemId.ToString() + " x" + num.ToString());
+                return 1;
+            }
+
+            if (gs.containerSystem == null)
+            {
+                SetStatus(-2, "ContainerSystem null");
+                return -2;
+            }
+            int safeNum = allowMerge ? num : Mathf.Clamp(num, 1, 200);
+            gs.containerSystem.AddMaterialToContainer(cid, eContainerTypeEnum.Bag, itemId, safeNum, false);
+            SetStatus(1, "Added to Bag: " + itemId.ToString() + " x" + safeNum.ToString());
             return 1;
         }
 

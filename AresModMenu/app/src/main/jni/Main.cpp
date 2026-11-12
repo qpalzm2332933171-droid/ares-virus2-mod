@@ -158,6 +158,7 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
     if (!shm) return env->NewStringUTF("{}");
 
     if (op == 1) {
+        size_t pending = ares::il2cpp::mod_pending_cmd_count();
         // Snapshot JSON
         std::string j;
         j.reserve(4096);
@@ -168,7 +169,8 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
         snprintf(head, sizeof(head),
                  "{\"ready\":%u,\"scene\":%d,\"cid\":%d,\"flags\":%u,"
                  "\"ac\":%d,\"ammo\":%d,\"end\":%d,\"paid\":%d,\"inst\":%d,\"infStk\":%d,\"noclip\":%d,\"mg\":%d,"
-                 "\"mgRate\":%u,\"dynSeq\":%u,\"tick\":%u,\"cmdRes\":%d,\"status\":\"%s\",",
+                 "\"mgRate\":%u,\"dynSeq\":%u,\"tick\":%u,\"cmdRes\":%d,"
+                 "\"okCnt\":%u,\"failCnt\":%u,\"lastFailId\":%d,\"pending\":%zu,\"status\":\"%s\",",
                  shm->bridgeReady, shm->sceneReady, shm->currentCid, fl,
                  (fl & MOD_FLAG_AC_DISABLE) ? 0 : 1,
                  (fl & MOD_FLAG_AMMO_INC) ? 1 : 0,
@@ -179,7 +181,8 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
                  (fl & MOD_FLAG_NOCLIP) ? 1 : 0,
                  (fl & MOD_FLAG_MACHINE_GUN) ? 1 : 0,
                  mgR, shm->dynSeq,
-                 shm->tickCount, shm->lastCmdResult, stEsc.c_str());
+                 shm->tickCount, shm->lastCmdResult,
+                 shm->cmdOkCount, shm->cmdFailCount, shm->lastFailArg1, pending, stEsc.c_str());
         j += head;
 
         // Home storage boxes
@@ -317,6 +320,13 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
     if (op == 13) {
         bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_SYNC_DYN_ASSETS, 0, 0, 0, 0);
         return env->NewStringUTF(ok ? "1" : "0");
+    }
+    if (op == 14) {
+        size_t pending = ares::il2cpp::mod_pending_cmd_count();
+        char out[128];
+        snprintf(out, sizeof(out), "{\"pending\":%zu,\"okCnt\":%u,\"failCnt\":%u,\"lastFailId\":%d}",
+                 pending, shm->cmdOkCount, shm->cmdFailCount, shm->lastFailArg1);
+        return env->NewStringUTF(out);
     }
     return env->NewStringUTF("{}");
 }

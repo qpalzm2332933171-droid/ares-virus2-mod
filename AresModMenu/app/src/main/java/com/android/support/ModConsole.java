@@ -54,6 +54,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -1296,6 +1297,65 @@ public final class ModConsole {
         } catch (Throwable ignored) {}
     }
 
+    private long[] readCmdCounters() {
+        long[] res = new long[] { 0L, 0L, 0L, 0L };
+        try {
+            String raw = Menu.NativeQuery(14, 0, 0, 0L, "");
+            if (raw != null && raw.startsWith("{")) {
+                JSONObject o = new JSONObject(raw);
+                res[0] = o.optLong("pending", 0L);
+                res[1] = o.optLong("okCnt", 0L);
+                res[2] = o.optLong("failCnt", 0L);
+                res[3] = o.optLong("lastFailId", 0L);
+            }
+        } catch (Throwable ignored) {}
+        return res;
+    }
+
+    private void awaitBatchDrain(final long baseOk, final long baseFail, final int queuedCount, final String label, final Runnable afterDoneHook) {
+        if (queuedCount <= 0) return;
+        XposedEntry.boostFastPump(Math.max(4000L, queuedCount * 20L));
+        Menu.NativeQuery(14, 0, 0, 0L, "");
+        if (queuedCount <= 16) {
+            mainH.postDelayed(new Runnable() {
+                @Override public void run() {
+                    XposedEntry.clearFastPump();
+                    pollSnapshot();
+                    if (afterDoneHook != null) afterDoneHook.run();
+                }
+            }, 220);
+            return;
+        }
+        Toast.makeText(ctx, label + "中：共 " + queuedCount + " 项，请稍候...", Toast.LENGTH_SHORT).show();
+        final int[] tries = new int[] { 0 };
+        mainH.postDelayed(new Runnable() {
+            @Override public void run() {
+                tries[0]++;
+                long[] cur = readCmdCounters();
+                long pending = cur[0];
+                if (pending > 0L && tries[0] < 150) {
+                    mainH.postDelayed(this, 100);
+                    return;
+                }
+                XposedEntry.clearFastPump();
+                pollSnapshot();
+                if (afterDoneHook != null) afterDoneHook.run();
+                long okDelta = Math.max(0L, cur[1] - baseOk);
+                long failDelta = Math.max(0L, cur[2] - baseFail);
+                long lastFailId = cur[3];
+                String msg;
+                if (pending > 0L) {
+                    msg = label + "部分仍在队列中（剩余 " + pending + " 项，已完成 " + okDelta + " 项）";
+                } else if (failDelta > 0L) {
+                    msg = label + "完成：成功 " + okDelta + " 项，跳过异常 " + failDelta + " 项" + (lastFailId > 0L ? (" (#" + lastFailId + ")") : "");
+                } else {
+                    msg = label + "完成：全部 " + queuedCount + " 项已生效";
+                }
+                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show();
+            }
+        }, 120);
+    }
+
     private void syncAllFlagsToNative() {
         XposedEntry.antiCheatEnabled = flagAC;
         Menu.NativeQuery(10, 0, flagAC ? 1 : 0, 0L, "");
@@ -1399,7 +1459,7 @@ public final class ModConsole {
 
         final List<ItemInfo> allItems = loadItems(ctx, false);
         final List<ItemInfo> filtered = new ArrayList<ItemInfo>(allItems);
-        final Set<Integer> selected = new HashSet<Integer>();
+        final Set<Integer> selected = new LinkedHashSet<Integer>();
         final int[] curBt = new int[] { 0 };
         final int[] curBst = new int[] { 0 };
         final int[] targetMode = new int[] { 0 };
@@ -1816,13 +1876,27 @@ public final class ModConsole {
                 try { num = Math.max(1, Integer.parseInt(etNum.getText().toString().trim())); } catch (Throwable ignored) {}
                 String tStr = (targetMode[0] == 1) ? "1" : "0";
                 long bId = (targetMode[0] == 1) ? boxIds[0] : 0L;
-                int sent = 0;
-                for (Integer itemId : selected) {
-                    Menu.NativeQuery(2, itemId, num, bId, tStr);
-                    sent++;
+                ArrayList<Integer> batch = new ArrayList<Integer>(selected.size());
+                HashSet<Integer> seen = new HashSet<Integer>(selected.size());
+                for (int i = 0; i < filtered.size(); i++) {
+                    int id = filtered.get(i).id;
+                    if (selected.contains(id) && seen.add(id)) batch.add(id);
                 }
-                Toast.makeText(ctx, "已发送 " + sent + " 种物品 x" + num + (targetMode[0] == 1 ? " → 仓库" : " → 背包"), Toast.LENGTH_SHORT).show();
-                mainH.postDelayed(new Runnable() { @Override public void run() { pollSnapshot(); } }, 240);
+                for (Integer itemId : selected) {
+                    if (seen.add(itemId)) batch.add(itemId);
+                }
+                long[] base = readCmdCounters();
+                int sent = 0;
+                for (int i = 0; i < batch.size(); i++) {
+                    if ("1".equals(Menu.NativeQuery(2, batch.get(i), num, bId, tStr))) {
+                        sent++;
+                    }
+                }
+                String destName = (targetMode[0] == 1) ? "仓库" : "背包";
+                if (sent <= 16) {
+                    Toast.makeText(ctx, "已发送 " + sent + " 种物品 x" + num + " → " + destName, Toast.LENGTH_SHORT).show();
+                }
+                awaitBatchDrain(base[1], base[2], sent, "物品发放(" + destName + " x" + num + ")", null);
             }
         });
 
@@ -2185,7 +2259,7 @@ public final class ModConsole {
 
         final List<BuffInfo> allBuffs = loadBuffs(ctx, false);
         final List<BuffInfo> filtered = new ArrayList<BuffInfo>(allBuffs);
-        final Set<Integer> selected = new HashSet<Integer>();
+        final Set<Integer> selected = new LinkedHashSet<Integer>();
         final int[] judgeFilter = new int[] { 99 }; // 99=All, 1=Good(+), -1=Bad(-), 0=Normal(·)
 
         LinearLayout top = new LinearLayout(ctx);
@@ -2458,8 +2532,14 @@ public final class ModConsole {
             @Override public void onClick(View v) {
                 if (selected.isEmpty()) { Menu.NativeQuery(5, 0, 0, 0L, ""); Toast.makeText(ctx, "已清全部 Mod Buff", Toast.LENGTH_SHORT).show(); }
                 else {
-                    for (Integer id : selected) Menu.NativeQuery(5, id, 0, 0L, "");
-                    Toast.makeText(ctx, "已移除选中 " + selected.size() + " 个 Buff", Toast.LENGTH_SHORT).show();
+                    long[] base = readCmdCounters();
+                    int sent = 0;
+                    for (Integer id : selected) {
+                        if ("1".equals(Menu.NativeQuery(5, id, 0, 0L, ""))) sent++;
+                    }
+                    if (sent <= 16) Toast.makeText(ctx, "已移除选中 " + sent + " 个 Buff", Toast.LENGTH_SHORT).show();
+                    awaitBatchDrain(base[1], base[2], sent, "移除 Buff", buffActiveRefreshHook);
+                    return;
                 }
                 mainH.postDelayed(buffActiveRefreshHook, 200);
             }
@@ -2473,9 +2553,13 @@ public final class ModConsole {
                 }
                 int sec = 0;
                 try { sec = Math.max(0, Integer.parseInt(etSec.getText().toString().trim())); } catch (Throwable ignored) {}
-                for (Integer id : selected) Menu.NativeQuery(4, id, sec, 0L, "");
-                Toast.makeText(ctx, "已施加 " + selected.size() + " 个 Buff (" + (sec == 0 ? "永久" : (sec + "s")) + ")", Toast.LENGTH_SHORT).show();
-                mainH.postDelayed(buffActiveRefreshHook, 200);
+                long[] base = readCmdCounters();
+                int sent = 0;
+                for (Integer id : selected) {
+                    if ("1".equals(Menu.NativeQuery(4, id, sec, 0L, ""))) sent++;
+                }
+                if (sent <= 16) Toast.makeText(ctx, "已施加 " + sent + " 个 Buff (" + (sec == 0 ? "永久" : (sec + "s")) + ")", Toast.LENGTH_SHORT).show();
+                awaitBatchDrain(base[1], base[2], sent, "施加 Buff", buffActiveRefreshHook);
             }
         });
 

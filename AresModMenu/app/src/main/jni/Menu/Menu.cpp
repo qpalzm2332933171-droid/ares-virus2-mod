@@ -93,6 +93,7 @@ jobjectArray SettingsList(JNIEnv *env, jobject activityObject) {
 //   Java 侧用 Handler(Looper.getMainLooper()).post() 进来，是唯一安全入口。
 void ProbeOnMain(JNIEnv *env, jclass clazz) {
     (void) env; (void) clazz;
+    ares::il2cpp::mod_pump_overflow();
     static uint32_t s_ticks = 0;
     s_ticks++;
 

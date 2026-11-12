@@ -25,6 +25,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -2768,11 +2769,39 @@ void mod_set_flag(uint32_t bit, bool on) {
     else    g_shm.flags &= ~bit;
 }
 
-bool mod_enqueue_cmd(int32_t type, int32_t a1, int32_t a2, int32_t a3, int64_t aL) {
+static std::mutex g_cmdOverflowMtx;
+static std::deque<ModCmd> g_cmdOverflow;
+
+static size_t pump_overflow_locked() {
+    uint32_t r = __atomic_load_n(&g_shm.cmdReadIdx, __ATOMIC_ACQUIRE);
     uint32_t w = g_shm.cmdWriteIdx;
-    uint32_t r = g_shm.cmdReadIdx;
-    if ((w - r) >= 31u) return false;
-    ModCmd& c = g_shm.cmds[w & 31u];
+    uint32_t pushed = 0;
+    while (!g_cmdOverflow.empty() && (w - r) < 31u) {
+        g_shm.cmds[w & 31u] = g_cmdOverflow.front();
+        g_cmdOverflow.pop_front();
+        w++;
+        pushed++;
+    }
+    if (pushed > 0) {
+        __atomic_store_n(&g_shm.cmdWriteIdx, w, __ATOMIC_RELEASE);
+    }
+    return g_cmdOverflow.size() + (size_t)(w - r);
+}
+
+void mod_pump_overflow() {
+    std::lock_guard<std::mutex> lk(g_cmdOverflowMtx);
+    pump_overflow_locked();
+}
+
+size_t mod_pending_cmd_count() {
+    std::lock_guard<std::mutex> lk(g_cmdOverflowMtx);
+    return pump_overflow_locked();
+}
+
+bool mod_enqueue_cmd(int32_t type, int32_t a1, int32_t a2, int32_t a3, int64_t aL) {
+    std::lock_guard<std::mutex> lk(g_cmdOverflowMtx);
+    pump_overflow_locked();
+    ModCmd c{};
     c.cmdType = type;
     c.arg1 = a1;
     c.arg2 = a2;
@@ -2780,7 +2809,15 @@ bool mod_enqueue_cmd(int32_t type, int32_t a1, int32_t a2, int32_t a3, int64_t a
     c.argL = aL;
     c.status = 0;
     c.extra = 0;
-    __atomic_store_n(&g_shm.cmdWriteIdx, w + 1u, __ATOMIC_RELEASE);
+
+    uint32_t w = g_shm.cmdWriteIdx;
+    uint32_t r = __atomic_load_n(&g_shm.cmdReadIdx, __ATOMIC_ACQUIRE);
+    if (g_cmdOverflow.empty() && (w - r) < 31u) {
+        g_shm.cmds[w & 31u] = c;
+        __atomic_store_n(&g_shm.cmdWriteIdx, w + 1u, __ATOMIC_RELEASE);
+    } else {
+        g_cmdOverflow.push_back(c);
+    }
     return true;
 }
 

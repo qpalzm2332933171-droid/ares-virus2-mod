@@ -191,6 +191,8 @@ const char* app_files_dir();
 ModShm* mod_shm();
 bool    load_mod_bridge(const char* path);
 bool    mod_enqueue_cmd(int32_t type, int32_t a1, int32_t a2, int32_t a3, int64_t aL = 0);
+void    mod_pump_overflow();
+size_t  mod_pending_cmd_count();
 void    mod_set_flag(uint32_t bit, bool on);
 
 // 带命名空间的热更类定位（find_class_by_name 只试空命名空间）
