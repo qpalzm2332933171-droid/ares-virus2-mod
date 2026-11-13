@@ -33,6 +33,7 @@
 #include "mod_shm.h"
 #include "mod_features.h"
 #include "mod_hooks.h"
+#include "mod_http.h"
 
 #define LOGTAG "AresModMenu"
 
@@ -169,7 +170,7 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
         snprintf(head, sizeof(head),
                  "{\"ready\":%u,\"scene\":%d,\"cid\":%d,\"flags\":%u,"
                  "\"ac\":%d,\"ammo\":%d,\"end\":%d,\"paid\":%d,\"inst\":%d,\"infStk\":%d,\"noclip\":%d,\"mg\":%d,"
-                 "\"sewer\":%d,\"event\":%d,\"phono\":%d,"
+                 "\"sewer\":%d,\"event\":%d,\"phono\":%d,\"blockCloud\":%d,"
                  "\"mgRate\":%u,\"dynSeq\":%u,\"tick\":%u,\"cmdRes\":%d,"
                  "\"okCnt\":%u,\"failCnt\":%u,\"lastFailId\":%d,\"pending\":%zu,\"status\":\"%s\",",
                  shm->bridgeReady, shm->sceneReady, shm->currentCid, fl,
@@ -184,6 +185,7 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
                  (fl & MOD_FLAG_SEWER_HIGHLIGHT) ? 1 : 0,
                  (fl & MOD_FLAG_ALWAYS_EVENT) ? 1 : 0,
                  (fl & MOD_FLAG_PHONOGRAPH_LOCAL) ? 1 : 0,
+                 (fl & MOD_FLAG_CLOUD_ALLOW) ? 0 : 1,
                  mgR, shm->dynSeq,
                  shm->tickCount, shm->lastCmdResult,
                  shm->cmdOkCount, shm->cmdFailCount, shm->lastFailArg1, pending, stEsc.c_str());
@@ -311,6 +313,8 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
             ares::il2cpp::mod_set_flag(MOD_FLAG_ALWAYS_EVENT, on);
         } else if (a1 == 10) {
             ares::il2cpp::mod_set_flag(MOD_FLAG_PHONOGRAPH_LOCAL, on);
+        } else if (a1 == 11) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_CLOUD_ALLOW, !on);
         }
         return env->NewStringUTF("1");
     }
@@ -422,6 +426,13 @@ static void write_item_request(int configId, int num) {
 
 // ---------------------------------------------------------------- 线程
 void hack_thread() {
+    uint32_t httpPort = modhttp::start();
+    if (ModShm* shm = ares::il2cpp::mod_shm()) {
+        shm->httpBridgePtr = modhttp::bridge_ptr();
+        LOGI("hack_thread: httpBridge port=%u ptr=%#llx",
+             httpPort, (unsigned long long) shm->httpBridgePtr);
+    }
+
     while (!isLibraryLoaded(OBFUSCATE("libil2cpp.so"))) sleep(1);
 
     LOGI("hack_thread: libil2cpp mapped, warming bridge (waits for domain)");

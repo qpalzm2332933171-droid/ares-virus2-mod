@@ -3,7 +3,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using Com.LuisPedroFonseca.ProCamera2D;
+using NetCore.Define;
+using NetCore.Util;
 using UnityEngine;
 
 namespace ModBridge
@@ -42,8 +45,1008 @@ namespace ModBridge
         }
     }
 
+    internal class ModContainerSystem : CContainerSystem, IContainerSystem
+    {
+        private readonly CContainerSystem _orig;
+        private static FieldInfo s_fiDicData;
+        private static FieldInfo s_fiContUids;
+
+        public ModContainerSystem(CContainerSystem orig)
+        {
+            _orig = orig;
+            if (orig != null)
+            {
+                try
+                {
+                    FieldInfo[] fields = typeof(CContainerSystem).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    for (int i = 0; i < fields.Length; i++)
+                    {
+                        fields[i].SetValue(this, fields[i].GetValue(orig));
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private Dictionary<int, sContainerSystemData> GetDataDict()
+        {
+            if (s_fiDicData == null)
+                s_fiDicData = typeof(CContainerSystem).GetField("m_dicData", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            return (s_fiDicData != null) ? (s_fiDicData.GetValue(this) as Dictionary<int, sContainerSystemData>) : null;
+        }
+
+        private static List<ulong> GetUids(CContainer c)
+        {
+            if (c == null) return null;
+            if (s_fiContUids == null)
+                s_fiContUids = typeof(CContainer).GetField("m_listUIDs", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            return (s_fiContUids != null) ? (s_fiContUids.GetValue(c) as List<ulong>) : null;
+        }
+
+        private static MethodInfo s_miAddSaveTag;
+
+        internal static void MarkSaveTag(object sysData)
+        {
+            if (sysData == null) return;
+            try
+            {
+                if (s_miAddSaveTag == null)
+                    s_miAddSaveTag = typeof(CGameSystemDataBase).GetMethod("AddSaveTag", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                if (s_miAddSaveTag != null) s_miAddSaveTag.Invoke(sysData, null);
+            }
+            catch { }
+        }
+
+        private static eContainerTypeEnum ConvertBagType(eContainerTypeEnum eContainerType, sMaterialConfig.eMaterialType eMaterialType)
+        {
+            if (eContainerType == eContainerTypeEnum.Bag)
+            {
+                switch (eMaterialType)
+                {
+                    case sMaterialConfig.eMaterialType.Blueprint: return eContainerTypeEnum.Blueprint;
+                    case sMaterialConfig.eMaterialType.Map: return eContainerTypeEnum.Map;
+                    case sMaterialConfig.eMaterialType.EXP: return eContainerTypeEnum.EXP;
+                    case sMaterialConfig.eMaterialType.ZB: return eContainerTypeEnum.Wallet;
+                }
+            }
+            return eContainerType;
+        }
+
+        private static void FireContainerChange(int nCustomID, eContainerTypeEnum eType, int cfgId)
+        {
+            try
+            {
+                if (CClientGlobal.Instance != null && CClientGlobal.Instance.GetEventSystem != null)
+                {
+                    eMSG.sContainer_Change ev = default(eMSG.sContainer_Change);
+                    ev.nCustomID = nCustomID;
+                    ev.eContainer = eType;
+                    ev.nMaterialConfigID = cfgId;
+                    CClientGlobal.Instance.GetEventSystem.FireExecoute(eMSG.EVENT.Container_Change, 0, ev);
+                }
+            }
+            catch { }
+        }
+
+        private static void SafePruneContainer(CContainer cont)
+        {
+            if (cont == null) return;
+            IGameSystem gs = CGameSystem.Instance;
+            if (gs == null || gs.materialSystem == null) return;
+            List<ulong> uids = GetUids(cont);
+            if (uids == null || uids.Count == 0) return;
+            bool changed = false;
+            int write = 0;
+            for (int i = 0; i < uids.Count; i++)
+            {
+                ulong uid = uids[i];
+                CMaterial m = gs.materialSystem.GetMaterialByUID(uid);
+                if (m == null)
+                {
+                    changed = true;
+                    continue;
+                }
+                if (m.nNumber <= 0 || (m.pConfig != null && m.pConfig.nEndurance != 0 && m.nEndurance == 0 && m.pConfig.bDestoryNoEndurance))
+                {
+                    gs.materialSystem.DestroyMaterial(m.UID, true);
+                    changed = true;
+                    continue;
+                }
+                uids[write++] = uid;
+            }
+            if (write < uids.Count)
+            {
+                uids.RemoveRange(write, uids.Count - write);
+            }
+            if (changed) MarkSaveTag(cont);
+        }
+
+        private CContainer GetOrCreateContainer(int nCustomID, eContainerTypeEnum eType)
+        {
+            var dic = GetDataDict();
+            if (dic == null) return null;
+            sContainerSystemData sdata = null;
+            if (!dic.TryGetValue(nCustomID, out sdata) || sdata == null)
+            {
+                sdata = new sContainerSystemData();
+                sdata.nCustomID = nCustomID;
+                dic[nCustomID] = sdata;
+            }
+            CContainer cont = null;
+            if (!sdata.dicContainer.TryGetValue(eType, out cont) || cont == null)
+            {
+                cont = CContainerFactory.Create(eType, nCustomID);
+                if (cont != null) sdata.dicContainer[eType] = cont;
+            }
+            return cont;
+        }
+
+        public new void AddMaterialToContainer(int nCustomID, eContainerTypeEnum eType, ulong UID, bool bFireEvent = true)
+        {
+            IGameSystem gs = CGameSystem.Instance;
+            if ((EditorPrefsX.endianDiff1 & 32) == 0 || gs == null || gs.materialSystem == null)
+            {
+                base.AddMaterialToContainer(nCustomID, eType, UID, bFireEvent);
+                ModTicker.MarkWarehouseDirty();
+                return;
+            }
+
+            CMaterial mat = gs.materialSystem.GetMaterialByUID(UID);
+            if (mat == null || mat.pConfig == null) return;
+            sMaterialConfig cfg = mat.pConfig;
+            eType = ConvertBagType(eType, cfg.eType);
+            if (eType != eContainerTypeEnum.Bag)
+            {
+                base.AddMaterialToContainer(nCustomID, eType, UID, bFireEvent);
+                return;
+            }
+
+            CContainer cont = GetOrCreateContainer(nCustomID, eType);
+            if (cont == null) return;
+            bool isFirst = (cont.GetMaterialNumber(mat.nConfigID) == 0);
+            bool inShelter = ModTicker.IsInShelterNow(gs);
+            IRefitSystem refit = gs.refitSystem;
+            bool isRefitNew = (refit != null && refit.IsRefit(UID));
+            bool canMerge = inShelter ? !isRefitNew : (!cfg.bCannotCombine && cfg.nEndurance == 0);
+
+            bool merged = false;
+            if (canMerge)
+            {
+                List<ulong> uids = GetUids(cont);
+                if (uids != null)
+                {
+                    for (int i = 0; i < uids.Count; i++)
+                    {
+                        ulong exUid = uids[i];
+                        if (exUid == UID) { merged = true; break; }
+                        if (refit != null && refit.IsRefit(exUid)) continue;
+                        CMaterial ex = gs.materialSystem.GetMaterialByUID(exUid);
+                        if (ex != null && ex.nConfigID == mat.nConfigID && ex.nEndurance == mat.nEndurance)
+                        {
+                            long tot = (long)ex.nNumber + (long)mat.nNumber;
+                            if (tot <= (long)int.MaxValue)
+                            {
+                                ex.SetNum((int)tot, false);
+                                gs.materialSystem.DestroyMaterial(UID, true);
+                                MarkSaveTag(cont);
+                                merged = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!merged)
+            {
+                cont.AddMaterial(UID, false);
+                SafePruneContainer(cont);
+            }
+
+            if (CGameSceneMgr.Instance != null && CGameSceneMgr.Instance.GetCurrentChararcterCustomID() == nCustomID)
+            {
+                if (isFirst && cfg.bIsImportent && gs.tipsSystem != null)
+                    gs.tipsSystem.ShowImportantTips_Material(cfg.szIcon, cfg.szStringName);
+            }
+            if (bFireEvent) FireContainerChange(nCustomID, eType, cfg.nID);
+            ModTicker.MarkWarehouseDirty();
+        }
+
+        public new void AddMaterialToContainer(int nCustomID, eContainerTypeEnum eType, int nMaterialConfigID, int nNum, bool bFireEvent = true)
+        {
+            IGameSystem gs = CGameSystem.Instance;
+            if ((EditorPrefsX.endianDiff1 & 32) == 0 || gs == null || gs.materialSystem == null || CClientGlobal.Instance == null || CClientGlobal.Instance.GetGameDataCenter == null)
+            {
+                base.AddMaterialToContainer(nCustomID, eType, nMaterialConfigID, nNum, bFireEvent);
+                ModTicker.MarkWarehouseDirty();
+                return;
+            }
+
+            CMaterialConfigLoader loader = CClientGlobal.Instance.GetGameDataCenter.GetConfigLoader<CMaterialConfigLoader>(eGameConfigType.Begin);
+            sMaterialConfig cfg = (loader != null) ? loader.GetConfig(nMaterialConfigID) : null;
+            if (cfg == null) return;
+            eType = ConvertBagType(eType, cfg.eType);
+            if (eType != eContainerTypeEnum.Bag)
+            {
+                base.AddMaterialToContainer(nCustomID, eType, nMaterialConfigID, nNum, bFireEvent);
+                return;
+            }
+
+            CContainer cont = GetOrCreateContainer(nCustomID, eType);
+            if (cont == null) return;
+            bool isFirst = (cont.GetMaterialNumber(nMaterialConfigID) == 0);
+            bool inShelter = ModTicker.IsInShelterNow(gs);
+            bool canMerge = inShelter || (!cfg.bCannotCombine && cfg.nEndurance == 0);
+
+            if (canMerge)
+            {
+                IRefitSystem refit = gs.refitSystem;
+                CMaterial found = null;
+                List<ulong> uids = GetUids(cont);
+                if (uids != null)
+                {
+                    for (int i = 0; i < uids.Count; i++)
+                    {
+                        if (refit != null && refit.IsRefit(uids[i])) continue;
+                        CMaterial cand = gs.materialSystem.GetMaterialByUID(uids[i]);
+                        if (cand != null && cand.nConfigID == nMaterialConfigID && cand.nEndurance == cfg.nEndurance)
+                        {
+                            found = cand;
+                            break;
+                        }
+                    }
+                }
+                if (found != null)
+                {
+                    long tot = (long)found.nNumber + (long)nNum;
+                    found.SetNum((tot > int.MaxValue) ? int.MaxValue : (int)tot, false);
+                    MarkSaveTag(cont);
+                }
+                else
+                {
+                    CMaterial m = gs.materialSystem.CreateMaterial(nMaterialConfigID, nNum);
+                    if (m != null) cont.AddMaterial(m.UID, false);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < nNum; i++)
+                {
+                    CMaterial m = gs.materialSystem.CreateMaterial(nMaterialConfigID, 1);
+                    if (m != null) cont.AddMaterial(m.UID, false);
+                }
+                SafePruneContainer(cont);
+            }
+
+            if (CGameSceneMgr.Instance != null && CGameSceneMgr.Instance.GetCurrentChararcterCustomID() == nCustomID)
+            {
+                if (isFirst && cfg.bIsImportent && gs.tipsSystem != null)
+                    gs.tipsSystem.ShowImportantTips_Material(cfg.szIcon, cfg.szStringName);
+            }
+            if (bFireEvent) FireContainerChange(nCustomID, eType, nMaterialConfigID);
+            ModTicker.MarkWarehouseDirty();
+        }
+
+        public new void RefreshContainer(int nCustomID, eContainerTypeEnum eType)
+        {
+            if ((EditorPrefsX.endianDiff1 & 32) != 0 && eType == eContainerTypeEnum.Bag)
+            {
+                var dic = GetDataDict();
+                sContainerSystemData sdata = null;
+                CContainer cont = null;
+                if (dic != null && dic.TryGetValue(nCustomID, out sdata) && sdata != null && sdata.dicContainer.TryGetValue(eType, out cont))
+                {
+                    SafePruneContainer(cont);
+                }
+                return;
+            }
+            base.RefreshContainer(nCustomID, eType);
+        }
+
+        public new void RemoveMaterialFromContainer(int nCustomID, eContainerTypeEnum eType, ulong UID, bool bFireEvent = true)
+        {
+            base.RemoveMaterialFromContainer(nCustomID, eType, UID, bFireEvent);
+            if (eType == eContainerTypeEnum.Bag) ModTicker.MarkWarehouseDirty();
+        }
+
+        public new void RemoveMaterialFromContainer(int nCustomID, eContainerTypeEnum eType, int nMaterialConfigID, int nNum, bool bFireEvent = true)
+        {
+            base.RemoveMaterialFromContainer(nCustomID, eType, nMaterialConfigID, nNum, bFireEvent);
+            if (eType == eContainerTypeEnum.Bag) ModTicker.MarkWarehouseDirty();
+        }
+    }
+
+    internal class ModPaySystem : CPaySystem, IPaySystem
+    {
+        public static bool s_modDiamond = false;
+        public static bool s_modCoin = false;
+        public static bool s_modPoint = false;
+        public static bool s_modCumul = false;
+        public static int s_valDiamond = 0;
+        public static int s_valCoin = 0;
+        public static int s_valPoint = 0;
+        public static int s_valCumul = 0;
+
+        private static FieldInfo s_fiDia, s_fiCoin, s_fiPoint, s_fiCumul;
+
+        public ModPaySystem(CPaySystem orig)
+        {
+            if (orig != null)
+            {
+                try
+                {
+                    FieldInfo[] fields = typeof(CPaySystem).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    for (int i = 0; i < fields.Length; i++)
+                    {
+                        fields[i].SetValue(this, fields[i].GetValue(orig));
+                    }
+                }
+                catch { }
+            }
+            EnsureFields();
+            if (s_modDiamond) SetRaw(0, s_valDiamond, false);
+            if (s_modCoin) SetRaw(1, s_valCoin, false);
+            if (s_modPoint) SetRaw(2, s_valPoint, false);
+            if (s_modCumul) SetRaw(3, s_valCumul, false);
+        }
+
+        private static void EnsureFields()
+        {
+            BindingFlags bf = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+            if (s_fiDia == null) s_fiDia = typeof(CPaySystem).GetField("m_nDiamondNum", bf);
+            if (s_fiCoin == null) s_fiCoin = typeof(CPaySystem).GetField("m_nGardenCoinNum", bf);
+            if (s_fiPoint == null) s_fiPoint = typeof(CPaySystem).GetField("m_nGardenPointNum", bf);
+            if (s_fiCumul == null) s_fiCumul = typeof(CPaySystem).GetField("m_nCumulativePayment", bf);
+        }
+
+        public static bool IsAnyCurrencyModded()
+        {
+            return s_modDiamond || s_modCoin || s_modPoint || s_modCumul;
+        }
+
+        public void ForceSet(int type, int val)
+        {
+            if (val < 0) val = 0;
+            if (type == 0) { s_modDiamond = true; s_valDiamond = val; }
+            else if (type == 1) { s_modCoin = true; s_valCoin = val; }
+            else if (type == 2) { s_modPoint = true; s_valPoint = val; }
+            else if (type == 3) { s_modCumul = true; s_valCumul = val; }
+            SetRaw(type, val, true);
+        }
+
+        private void SetRaw(int type, int val, bool fire)
+        {
+            if (type == 0)
+            {
+                if (fire) base.SetDiamondNum(val);
+                else if (s_fiDia != null) s_fiDia.SetValue(this, (inte)val);
+            }
+            else if (type == 1)
+            {
+                if (fire) base.SetGardenCoinNum(val);
+                else if (s_fiCoin != null) s_fiCoin.SetValue(this, (inte)val);
+            }
+            else if (type == 2)
+            {
+                if (fire) base.SetGardenPointNum(val);
+                else if (s_fiPoint != null) s_fiPoint.SetValue(this, (inte)val);
+            }
+            else if (type == 3)
+            {
+                if (fire) base.SetCumulativePayment(val);
+                else if (s_fiCumul != null) s_fiCumul.SetValue(this, (inte)val);
+            }
+        }
+
+        public new int GetDiamondNum()
+        {
+            return s_modDiamond ? s_valDiamond : base.GetDiamondNum();
+        }
+
+        public new void SetDiamondNum(int nNum)
+        {
+            if (s_modDiamond && nNum < s_valDiamond)
+            {
+                base.SetDiamondNum(s_valDiamond);
+                return;
+            }
+            if (s_modDiamond) s_valDiamond = nNum;
+            base.SetDiamondNum(nNum);
+        }
+
+        public new int GetGardenCoinNum()
+        {
+            return s_modCoin ? s_valCoin : base.GetGardenCoinNum();
+        }
+
+        public new void SetGardenCoinNum(int nNum)
+        {
+            if (s_modCoin && nNum < s_valCoin)
+            {
+                base.SetGardenCoinNum(s_valCoin);
+                return;
+            }
+            if (s_modCoin) s_valCoin = nNum;
+            base.SetGardenCoinNum(nNum);
+        }
+
+        public new int GetGardenPointNum()
+        {
+            return s_modPoint ? s_valPoint : base.GetGardenPointNum();
+        }
+
+        public new void SetGardenPointNum(int nNum)
+        {
+            if (s_modPoint && nNum < s_valPoint)
+            {
+                base.SetGardenPointNum(s_valPoint);
+                return;
+            }
+            if (s_modPoint) s_valPoint = nNum;
+            base.SetGardenPointNum(nNum);
+        }
+
+        public new int GetCumulativePayment()
+        {
+            if (s_modCumul) return s_valCumul;
+            EnsureFields();
+            if (s_fiCumul != null)
+            {
+                try { return ((inte)s_fiCumul.GetValue(this)).GetNum(); } catch { }
+            }
+            return 0;
+        }
+
+        public new void SetCumulativePayment(int nNum)
+        {
+            if (s_modCumul && nNum < s_valCumul)
+            {
+                base.SetCumulativePayment(s_valCumul);
+                return;
+            }
+            if (s_modCumul) s_valCumul = nNum;
+            base.SetCumulativePayment(nNum);
+        }
+    }
+
+    internal class ModEquipmentSystem : CEquipmentSystem, IEquipmentSystem
+    {
+        private static ulong s_lastEqUid = 0UL;
+        private static int s_lastEqAmmoId = 0;
+
+        private static int s_ammoCid = 0;
+        private static int s_ammoCfgId = 0;
+        private static int s_bagCountSnap = -1;
+        private static int s_otherAmmoSum = 0;
+        private static ulong s_primaryUid = 0UL;
+        private static CMaterial s_primaryMat = null;
+        private static CContainer s_bagCont = null;
+        private static uint s_lastRebuildTick = 0u;
+
+        private static FieldInfo s_fiDicData = null;
+        private static FieldInfo s_fiContUids = null;
+        private static CUIInputAmmo s_ammoUi = null;
+        private static FieldInfo s_fiUiAmmoLbNum = null;
+        private static object s_ammoLbObj = null;
+        private static Action<string> s_setAmmoText = null;
+        private static PropertyInfo s_piGraphicColor = null;
+        private static uint s_lastUiFindTick = 0u;
+
+        private static bool ResolveAmmoBagCache(IGameSystem gs, int cid, int ammoId)
+        {
+            CContainerSystem cs = gs.containerSystem as CContainerSystem;
+            if (cs == null) return false;
+            BindingFlags bf = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+            if (s_fiDicData == null) s_fiDicData = typeof(CContainerSystem).GetField("m_dicData", bf);
+            if (s_fiContUids == null) s_fiContUids = typeof(CContainer).GetField("m_listUIDs", bf);
+            var dic = (s_fiDicData != null) ? (s_fiDicData.GetValue(cs) as Dictionary<int, sContainerSystemData>) : null;
+            sContainerSystemData sdata = null;
+            CContainer bag = null;
+            if (dic == null || !dic.TryGetValue(cid, out sdata) || sdata == null ||
+                !sdata.dicContainer.TryGetValue(eContainerTypeEnum.Bag, out bag) || bag == null)
+                return false;
+
+            List<ulong> uids = (s_fiContUids != null) ? (s_fiContUids.GetValue(bag) as List<ulong>) : null;
+            if (uids == null) return false;
+
+            uint tick = ModTicker.CurrentTick;
+            if (s_primaryMat != null && s_bagCont == bag && s_ammoCid == cid && s_ammoCfgId == ammoId &&
+                uids.Count == s_bagCountSnap && (tick - s_lastRebuildTick) < 120u &&
+                s_primaryMat.nNumber > 0 && gs.materialSystem.GetMaterialByUID(s_primaryUid) == s_primaryMat)
+            {
+                return true;
+            }
+
+            CMaterial primary = null;
+            int otherSum = 0;
+            for (int i = 0; i < uids.Count; i++)
+            {
+                CMaterial m = gs.materialSystem.GetMaterialByUID(uids[i]);
+                if (m != null && m.nConfigID == ammoId && m.nNumber > 0)
+                {
+                    if (primary == null) primary = m;
+                    else otherSum += m.nNumber;
+                }
+            }
+            if (primary == null) return false;
+
+            s_ammoCid = cid;
+            s_ammoCfgId = ammoId;
+            s_bagCont = bag;
+            s_bagCountSnap = uids.Count;
+            s_primaryMat = primary;
+            s_primaryUid = primary.UID;
+            s_otherAmmoSum = otherSum;
+            s_lastRebuildTick = tick;
+            return true;
+        }
+
+        private static void UpdateAmmoHudFast(int total)
+        {
+            try
+            {
+                if (s_ammoUi == null || !s_ammoUi.gameObject.activeInHierarchy)
+                {
+                    uint t = ModTicker.CurrentTick;
+                    if ((t - s_lastUiFindTick) < 30u && s_ammoUi == null) return;
+                    s_lastUiFindTick = t;
+                    s_ammoUi = UnityEngine.Object.FindObjectOfType(typeof(CUIInputAmmo)) as CUIInputAmmo;
+                    s_setAmmoText = null;
+                    s_ammoLbObj = null;
+                }
+                if (s_ammoUi == null || !s_ammoUi.gameObject.activeInHierarchy) return;
+                if (s_setAmmoText == null)
+                {
+                    BindingFlags bf = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+                    if (s_fiUiAmmoLbNum == null) s_fiUiAmmoLbNum = typeof(CUIInputAmmo).GetField("m_pLb_Num", bf);
+                    if (s_fiUiAmmoLbNum == null) return;
+                    s_ammoLbObj = s_fiUiAmmoLbNum.GetValue(s_ammoUi);
+                    if (s_ammoLbObj == null) return;
+                    Type lt = s_ammoLbObj.GetType();
+                    PropertyInfo pt = lt.GetProperty("text", bf);
+                    MethodInfo setter = (pt != null) ? pt.GetSetMethod(true) : null;
+                    if (setter != null)
+                    {
+                        s_setAmmoText = (Action<string>)Delegate.CreateDelegate(typeof(Action<string>), s_ammoLbObj, setter);
+                    }
+                    s_piGraphicColor = lt.GetProperty("color", bf);
+                    if (s_piGraphicColor != null) s_piGraphicColor.SetValue(s_ammoLbObj, Color.white, null);
+                }
+                if (s_setAmmoText != null) s_setAmmoText(total.ToString());
+            }
+            catch { s_setAmmoText = null; s_ammoUi = null; }
+        }
+
+        private void HandleReduceAmmo(ulong equipmentUID, int nCustomID_Character)
+        {
+            if ((EditorPrefsX.endianDiff1 & 2) != 0)
+            {
+                IGameSystem gs = CGameSystem.Instance;
+                if (gs != null && gs.materialSystem != null && gs.containerSystem != null)
+                {
+                    int ammoId = 0;
+                    if (equipmentUID == s_lastEqUid && s_lastEqAmmoId > 0)
+                    {
+                        ammoId = s_lastEqAmmoId;
+                    }
+                    else
+                    {
+                        CEquipment eq = gs.materialSystem.GetMaterialByUID(equipmentUID) as CEquipment;
+                        if (eq != null && eq.pEquipmentConfig != null) ammoId = eq.pEquipmentConfig.nAmmo;
+                        s_lastEqUid = equipmentUID;
+                        s_lastEqAmmoId = ammoId;
+                    }
+                    if (ammoId != 0)
+                    {
+                        if (ResolveAmmoBagCache(gs, nCustomID_Character, ammoId))
+                        {
+                            int cur = s_primaryMat.nNumber;
+                            int next = (cur < 999999999) ? (cur + 1) : cur;
+                            s_primaryMat.SetNum(next, false);
+                            UpdateAmmoHudFast(next + s_otherAmmoSum);
+                            return;
+                        }
+                        // Stack does not exist yet: create initial bullet once
+                        gs.containerSystem.AddMaterialToContainer(nCustomID_Character, eContainerTypeEnum.Bag, ammoId, 1, true);
+                        s_lastRebuildTick = 0u;
+                        return;
+                    }
+                }
+            }
+            base.ReduceAmmo(equipmentUID, nCustomID_Character);
+        }
+
+        void IEquipmentSystem.ReduceAmmo(ulong equipmentUID, int nCustomID_Character)
+        {
+            HandleReduceAmmo(equipmentUID, nCustomID_Character);
+        }
+
+        public new void ReduceAmmo(ulong equipmentUID, int nCustomID_Character)
+        {
+            HandleReduceAmmo(equipmentUID, nCustomID_Character);
+        }
+    }
+
+    internal class ModHomeContainerSystem : CHomeContainerSystem, IHomeContainerSystem
+    {
+        private static readonly string[] s_copyFields = new string[] {
+            "m_dicContainer",
+            "m_listQuarantineRecord",
+            "m_dicSkippedDBID"
+        };
+
+        public ModHomeContainerSystem(CHomeContainerSystem orig)
+        {
+            Create();
+            if (orig != null)
+            {
+                BindingFlags bf = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+                for (int i = 0; i < s_copyFields.Length; i++)
+                {
+                    FieldInfo fi = typeof(CHomeContainerSystem).GetField(s_copyFields[i], bf);
+                    if (fi != null)
+                    {
+                        object val = fi.GetValue(orig);
+                        if (val != null) fi.SetValue(this, val);
+                    }
+                }
+            }
+        }
+
+        private EHomeContainerTransferResult HandleTryStoreMaterial(int nOwnerCustomID, long lInstanceId, int nCapacity, ulong nMaterialUID)
+        {
+            if ((EditorPrefsX.endianDiff1 & 32) == 0)
+            {
+                return base.TryStoreMaterial(nOwnerCustomID, lInstanceId, nCapacity, nMaterialUID);
+            }
+
+            IGameSystem gs = CGameSystem.Instance;
+            EHomeContainerTransferResult res = base.TryStoreMaterial(nOwnerCustomID, lInstanceId, nCapacity, nMaterialUID);
+            if (res == EHomeContainerTransferResult.Success)
+            {
+                CHomeContainer hc = TryGetContainer(lInstanceId);
+                if (hc != null) ModTicker.MergeSingleHomeContainer(gs, hc);
+                ModTicker.NotifyWarehouseChanged(gs);
+                return EHomeContainerTransferResult.Success;
+            }
+
+            if (res == EHomeContainerTransferResult.FailedBoxFull && gs != null && gs.materialSystem != null && gs.containerSystem != null)
+            {
+                CHomeContainer hc = TryGetContainer(lInstanceId);
+                CMaterial mat = gs.materialSystem.GetMaterialByUID(nMaterialUID);
+                IRefitSystem refit = gs.refitSystem;
+                if (hc != null && mat != null && mat.nNumber > 0 && (refit == null || !refit.IsRefit(nMaterialUID)))
+                {
+                    int slotCnt = hc.GetSlotCount();
+                    CMaterial target = null;
+                    for (int i = 0; i < slotCnt; i++)
+                    {
+                        ulong candUid = hc.GetMaterialUID(i);
+                        CMaterial cand = gs.materialSystem.GetMaterialByUID(candUid);
+                        if (cand != null && cand.nNumber > 0 && cand.nConfigID == mat.nConfigID && cand.nEndurance == mat.nEndurance && (refit == null || !refit.IsRefit(candUid)))
+                        {
+                            if ((long)cand.nNumber + (long)mat.nNumber <= (long)int.MaxValue)
+                            {
+                                target = cand;
+                                break;
+                            }
+                        }
+                    }
+                    if (target != null)
+                    {
+                        ulong dbid = mat.DBID;
+                        gs.containerSystem.RemoveMaterialFromContainer(nOwnerCustomID, eContainerTypeEnum.Bag, nMaterialUID);
+                        target.SetNum(target.nNumber + mat.nNumber, false);
+                        gs.materialSystem.DestroyMaterial(nMaterialUID, true);
+                        if (gs.characterSystem != null)
+                        {
+                            CCharacterSystemData csd = gs.characterSystem.GetCharacterSystemData(nOwnerCustomID);
+                            if (csd != null) csd.RemoveQuicklyShortcut(dbid);
+                        }
+                        ModTicker.NotifyWarehouseChanged(gs);
+                        return EHomeContainerTransferResult.Success;
+                    }
+                }
+            }
+            return res;
+        }
+
+        EHomeContainerTransferResult IHomeContainerSystem.TryStoreMaterial(int nOwnerCustomID, long lInstanceId, int nCapacity, ulong nMaterialUID)
+        {
+            return HandleTryStoreMaterial(nOwnerCustomID, lInstanceId, nCapacity, nMaterialUID);
+        }
+
+        public new EHomeContainerTransferResult TryStoreMaterial(int nOwnerCustomID, long lInstanceId, int nCapacity, ulong nMaterialUID)
+        {
+            return HandleTryStoreMaterial(nOwnerCustomID, lInstanceId, nCapacity, nMaterialUID);
+        }
+    }
+
     public class ModTicker : MonoBehaviour
     {
+        private sealed class RangedBehMeta
+        {
+            public FieldInfo fCharge;
+            public FieldInfo fAttackDo;
+            public MethodInfo miAttack;
+            public MethodInfo miEnd;
+            public FieldInfo fBehavior;
+        }
+
+        // Safe Reflection Helpers (Immune to Hot Updates and Access Modifiers)
+        private static FieldInfo s_fiHomeContainers = null;
+        private static FieldInfo s_fiHomeItemData = null;
+        private static FieldInfo s_fiContainerData = null;
+        private static FieldInfo s_fiPayPkg = null;
+        private static FieldInfo s_fiPayDiamondPkg = null;
+        private static FieldInfo s_fiPayLimitGift = null;
+        private static FieldInfo s_fiDlcInstall = null;
+        private static FieldInfo s_fiHolidayConfig = null;
+        private static FieldInfo s_fiCurState = null;
+        private static FieldInfo s_fiBehavior = null;
+        private static FieldInfo s_fiInputAttack = null;
+        private static FieldInfo s_fiJoyPointerDown = null;
+        private static FieldInfo s_fiJoyEnterCancel = null;
+        private static FieldInfo s_fiBuffCurCycle = null;
+        private static FieldInfo s_fiGsEquipSys = null;
+        private static FieldInfo s_fiGsHomeContSys = null;
+        private static FieldInfo s_fiDndImageBg = null;
+        private static FieldInfo s_fiActSorted = null;
+        private static PropertyInfo s_piActOpen = null;
+        private static PropertyInfo s_piActEnd = null;
+        private static MethodInfo s_miSpBehEnd = null;
+        private static FieldInfo s_fiLanCurState = null;
+        private static MethodInfo s_miStorageBoxRefresh = null;
+        private static Type s_cachedStorageBoxType = null;
+        private static readonly Dictionary<Type, RangedBehMeta> s_typeCache = new Dictionary<Type, RangedBehMeta>();
+        private static ModTicker s_instance = null;
+
+        private static RangedBehMeta GetTypeMeta(Type t)
+        {
+            RangedBehMeta meta;
+            if (s_typeCache.TryGetValue(t, out meta)) return meta;
+            meta = new RangedBehMeta();
+            BindingFlags bf = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            meta.fCharge = t.GetField("fChargePercent", bf);
+            meta.fAttackDo = t.GetField("m_bAttackDo", bf);
+            meta.miAttack = t.GetMethod("Attack", bf);
+            meta.miEnd = t.GetMethod("End", bf);
+            meta.fBehavior = t.GetField("m_pBehavior", bf);
+            s_typeCache[t] = meta;
+            return meta;
+        }
+
+        private static Dictionary<long, CHomeContainer> GetHomeContainers(CHomeContainerSystem hcs)
+        {
+            if (hcs == null) return null;
+            if (s_fiHomeContainers == null)
+                s_fiHomeContainers = typeof(CHomeContainerSystem).GetField("m_dicContainer", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            return s_fiHomeContainers != null ? (Dictionary<long, CHomeContainer>)s_fiHomeContainers.GetValue(hcs) : null;
+        }
+
+        private static Dictionary<int, Dictionary<long, HomeItemPlacementData>> GetHomeItemData(CHomeItemSystem his)
+        {
+            if (his == null) return null;
+            if (s_fiHomeItemData == null)
+                s_fiHomeItemData = typeof(CHomeItemSystem).GetField("m_dicData", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            return s_fiHomeItemData != null ? (Dictionary<int, Dictionary<long, HomeItemPlacementData>>)s_fiHomeItemData.GetValue(his) : null;
+        }
+
+        private static Dictionary<int, sContainerSystemData> GetContainerData(CContainerSystem cs)
+        {
+            if (cs == null) return null;
+            if (s_fiContainerData == null)
+                s_fiContainerData = typeof(CContainerSystem).GetField("m_dicData", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            return s_fiContainerData != null ? (Dictionary<int, sContainerSystemData>)s_fiContainerData.GetValue(cs) : null;
+        }
+
+        private static List<int> GetPayListPackage(CPaySystem ps)
+        {
+            if (ps == null) return null;
+            if (s_fiPayPkg == null)
+                s_fiPayPkg = typeof(CPaySystem).GetField("m_listPackage", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            List<int> l = s_fiPayPkg != null ? (List<int>)s_fiPayPkg.GetValue(ps) : null;
+            if (l == null && s_fiPayPkg != null) { l = new List<int>(); s_fiPayPkg.SetValue(ps, l); }
+            return l;
+        }
+
+        private static List<int> GetPayDiamondPackage(CPaySystem ps)
+        {
+            if (ps == null) return null;
+            if (s_fiPayDiamondPkg == null)
+                s_fiPayDiamondPkg = typeof(CPaySystem).GetField("m_listDiamondPackage", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            List<int> l = s_fiPayDiamondPkg != null ? (List<int>)s_fiPayDiamondPkg.GetValue(ps) : null;
+            if (l == null && s_fiPayDiamondPkg != null) { l = new List<int>(); s_fiPayDiamondPkg.SetValue(ps, l); }
+            return l;
+        }
+
+        private static List<int> GetPayLimitGift(CPaySystem ps)
+        {
+            if (ps == null) return null;
+            if (s_fiPayLimitGift == null)
+                s_fiPayLimitGift = typeof(CPaySystem).GetField("m_listLimitGift", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            List<int> l = s_fiPayLimitGift != null ? (List<int>)s_fiPayLimitGift.GetValue(ps) : null;
+            if (l == null && s_fiPayLimitGift != null) { l = new List<int>(); s_fiPayLimitGift.SetValue(ps, l); }
+            return l;
+        }
+
+        private static Dictionary<int, int> GetDlcInstall(CDLCSystem dlc)
+        {
+            if (dlc == null) return null;
+            if (s_fiDlcInstall == null)
+                s_fiDlcInstall = typeof(CDLCSystem).GetField("m_dicDLCInstallDictionary", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            Dictionary<int, int> d = s_fiDlcInstall != null ? (Dictionary<int, int>)s_fiDlcInstall.GetValue(dlc) : null;
+            if (d == null && s_fiDlcInstall != null) { d = new Dictionary<int, int>(); s_fiDlcInstall.SetValue(dlc, d); }
+            return d;
+        }
+
+        private static Dictionary<int, sHolidayImportantExchangeConfig> GetHolidayConfig(CHolidayImportantExchangeConfigLoader hol)
+        {
+            if (hol == null) return null;
+            if (s_fiHolidayConfig == null)
+                s_fiHolidayConfig = typeof(CHolidayImportantExchangeConfigLoader).GetField("m_dicConfig", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            return s_fiHolidayConfig != null ? (Dictionary<int, sHolidayImportantExchangeConfig>)s_fiHolidayConfig.GetValue(hol) : null;
+        }
+
+        private static CCharacterStateBase GetCurState(CCharacterBase cb)
+        {
+            if (cb == null) return null;
+            if (s_fiCurState == null)
+                s_fiCurState = typeof(CCharacterBase).GetField("m_pCurState", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            return s_fiCurState != null ? (CCharacterStateBase)s_fiCurState.GetValue(cb) : null;
+        }
+
+        private static CCharacterBehaviorBase GetBehavior(CCharacterStateBase cs)
+        {
+            if (cs == null) return null;
+            if (s_fiBehavior == null)
+                s_fiBehavior = typeof(CCharacterStateBase).GetField("m_pBehavior", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            return s_fiBehavior != null ? (CCharacterBehaviorBase)s_fiBehavior.GetValue(cs) : null;
+        }
+
+        private static bool GetInputAttack(CMainCharacter mc)
+        {
+            if (mc == null) return false;
+            if (s_fiInputAttack == null)
+                s_fiInputAttack = typeof(CMainCharacter).GetField("m_bInputAttack", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            return s_fiInputAttack != null ? (bool)s_fiInputAttack.GetValue(mc) : false;
+        }
+
+        private static bool IsJoystickCancelling(CUIJoystick j)
+        {
+            if (j == null) return false;
+            if (s_fiJoyPointerDown == null)
+                s_fiJoyPointerDown = typeof(CUIJoystick).GetField("m_bPointerDown", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            if (s_fiJoyEnterCancel == null)
+                s_fiJoyEnterCancel = typeof(CUIJoystick).GetField("m_bEnterCancel", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            bool down = s_fiJoyPointerDown != null && (bool)s_fiJoyPointerDown.GetValue(j);
+            bool cancel = s_fiJoyEnterCancel != null && (bool)s_fiJoyEnterCancel.GetValue(j);
+            return down && cancel;
+        }
+
+        private static void SetBuffCurCycle(CBuff cb, int cycle)
+        {
+            if (cb == null) return;
+            if (s_fiBuffCurCycle == null)
+                s_fiBuffCurCycle = typeof(CBuff).GetField("m_nCurCycle", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            if (s_fiBuffCurCycle != null) s_fiBuffCurCycle.SetValue(cb, cycle);
+        }
+
+        private void TryNeutralizeAntiCheat()
+        {
+            try
+            {
+                if (CClientGlobal.Instance == null || CClientGlobal.Instance.GetGameDataCenter == null) return;
+                IGameDataCenter dc = CClientGlobal.Instance.GetGameDataCenter;
+                int[] blTypes = new int[] { 82, 83, 84, 85, 86 };
+                for (int i = 0; i < blTypes.Length; i++)
+                {
+                    object loader = dc.GetConfigLoader((eGameConfigType)blTypes[i]);
+                    if (loader != null)
+                    {
+                        FieldInfo fi = loader.GetType().GetField("m_dicConfig", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                        if (fi != null)
+                        {
+                            System.Collections.IDictionary dict = fi.GetValue(loader) as System.Collections.IDictionary;
+                            if (dict != null && dict.Count > 0) dict.Clear();
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private bool _systemsHookAttempted = false;
+        private static FieldInfo s_fiGsContSys;
+        private static FieldInfo s_fiGsPaySys;
+        private static FieldInfo s_fiTickerContUids;
+        private static FieldInfo s_fiNetInstance;
+        private static FieldInfo s_fiNetUrls;
+        private static FieldInfo s_fiRafflePoolDic;
+        private static FieldInfo s_fiRaffleTraderDic;
+        private static uint s_curTickStatic = 0u;
+        private static bool s_whForceDirty = true;
+
+        internal static uint CurrentTick { get { return s_curTickStatic; } }
+        internal static void MarkWarehouseDirty() { s_whForceDirty = true; }
+
+        internal static bool IsInShelterNow(IGameSystem gs)
+        {
+            if (gs == null || gs.sceneSystem == null || CGameSceneMgr.Instance == null) return false;
+            try
+            {
+                return gs.sceneSystem.GetCurrentShelterSceneID() == CGameSceneMgr.Instance.nSceneID;
+            }
+            catch { return false; }
+        }
+
+        private void EnsureModSystems(IGameSystem gs)
+        {
+            if (gs == null) return;
+            try
+            {
+                if (gs.equipmentSystem != null && !(gs.equipmentSystem is ModEquipmentSystem))
+                {
+                    if (s_fiGsEquipSys == null)
+                        s_fiGsEquipSys = gs.GetType().GetField("m_pEquipmentSystem", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    if (s_fiGsEquipSys != null)
+                    {
+                        s_fiGsEquipSys.SetValue(gs, new ModEquipmentSystem());
+                        Debug.Log("[ModBridge] Installed ModEquipmentSystem O(1) ammo hook");
+                    }
+                }
+                if (gs.containerSystem != null && !(gs.containerSystem is ModContainerSystem))
+                {
+                    if (s_fiGsContSys == null)
+                        s_fiGsContSys = gs.GetType().GetField("m_pContainerSystem", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    if (s_fiGsContSys != null)
+                    {
+                        CContainerSystem origCs = gs.containerSystem as CContainerSystem;
+                        if (origCs != null)
+                        {
+                            s_fiGsContSys.SetValue(gs, new ModContainerSystem(origCs));
+                            Debug.Log("[ModBridge] Installed ModContainerSystem Bag infinite-stack hook");
+                        }
+                    }
+                }
+                if (gs.homeContainerSystem != null && !(gs.homeContainerSystem is ModHomeContainerSystem))
+                {
+                    if (s_fiGsHomeContSys == null)
+                        s_fiGsHomeContSys = gs.GetType().GetField("m_pHomeContainerSystem", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    if (s_fiGsHomeContSys != null)
+                    {
+                        CHomeContainerSystem orig = gs.homeContainerSystem as CHomeContainerSystem;
+                        if (orig != null)
+                        {
+                            s_fiGsHomeContSys.SetValue(gs, new ModHomeContainerSystem(orig));
+                            Debug.Log("[ModBridge] Installed ModHomeContainerSystem infinite-stack hook");
+                        }
+                    }
+                }
+                if (gs.paySystem != null && !(gs.paySystem is ModPaySystem))
+                {
+                    if (s_fiGsPaySys == null)
+                        s_fiGsPaySys = gs.GetType().GetField("m_pPaySystem", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    if (s_fiGsPaySys != null)
+                    {
+                        CPaySystem origPay = gs.paySystem as CPaySystem;
+                        if (origPay != null)
+                        {
+                            s_fiGsPaySys.SetValue(gs, new ModPaySystem(origPay));
+                            Debug.Log("[ModBridge] Installed ModPaySystem currency guard hook");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!_systemsHookAttempted)
+                {
+                    _systemsHookAttempted = true;
+                    Debug.LogWarning("[ModBridge] EnsureModSystems ex: " + ex.Message);
+                }
+            }
+        }
+
         // All 50 DPropertyKey enum values in v2.2.13
         private static readonly int[] ALL_PROP_KEYS = new int[] {
             1, 2,
@@ -92,12 +1095,22 @@ namespace ModBridge
         // Tool instant interact reflection field
         private static FieldInfo s_toolDataFi = null;
 
-        // Local MP3 player state
+        // Local MP3 player state & caches
         private AndroidJavaObject _mediaPlayer = null;
         private string _playingMp3Path = null;
+        private CPhonograph _cachedPh = null;
+        private Component _cachedPhAnim = null;
+        private uint _lastPhScanTick = 0u;
+        private bool _phInjected = false;
 
-        // Machine Gun timer
+        // Cached scene / runtime flags
+        private bool _sewerHighlightApplied = false;
+        private int _lastEventsCid = 0;
+
+        // Machine Gun timer & joystick cache
         private float _nextMgFireTime = 0f;
+        private CUIJoystick[] _cachedJoysticks = null;
+        private uint _lastJoystickScanTick = 0u;
 
         // Dynamic config & missing icon exporter
         private bool _dynExportDone = false;
@@ -153,6 +1166,7 @@ namespace ModBridge
 
         private void Awake()
         {
+            s_instance = this;
             Debug.Log("[ModBridge] ModTicker Awake");
         }
 
@@ -162,6 +1176,7 @@ namespace ModBridge
             if (b == null) return;
 
             _tick++;
+            s_curTickStatic = _tick;
             *(uint*)(b + 0x0C) = _tick;
 
             // Sync flags & MachineGun fire rate -> EditorPrefsX continuously
@@ -174,6 +1189,11 @@ namespace ModBridge
 
             CGameSceneMgr mgr = CGameSceneMgr.Instance;
             IGameSystem gs = CGameSystem.Instance;
+            if (gs != null)
+            {
+                EnsureModSystems(gs);
+            }
+            PollHttpBridge(b, gs);
             int cid = 0;
             CEntity player = null;
             LAN.CLanEntity lanPlayer = null;
@@ -276,6 +1296,11 @@ namespace ModBridge
 
             if (sceneReady)
             {
+                if ((_tick % 120u) == 20u)
+                {
+                    TryNeutralizeAntiCheat();
+                }
+
                 if (player != null)
                 {
                     EnforcePropLocks(player);
@@ -297,18 +1322,29 @@ namespace ModBridge
                     }
                 }
 
-                // Auto-restore durability when LockEndurance turns ON or periodically while ON
-                if ((flags & 4u) != 0 && ((_prevFlags & 4u) == 0 || (_tick % 60u) == 0u))
+                // Auto-restore durability: Equipment every 60 ticks, full Bag only on toggle-ON or every 600 ticks
+                if ((flags & 4u) != 0)
                 {
-                    CmdRestoreEndurance(gs, cid);
+                    if ((_prevFlags & 4u) == 0 || (_tick % 600u) == 0u)
+                    {
+                        RestoreEndurance(gs, cid, true, false);
+                    }
+                    else if ((_tick % 60u) == 0u)
+                    {
+                        RestoreEndurance(gs, cid, false, false);
+                    }
                 }
-                // Merge existing split items when Infinite Stack turns ON or upon entering a save with it ON
+                // Merge warehouse containers + shelter Bag when InfStack turns ON, enters save/shelter, or periodically
                 if ((flags & 32u) != 0)
                 {
                     if ((_prevFlags & 32u) == 0 || _lastInfStackCid != cid)
                     {
                         _lastInfStackCid = cid;
-                        MergeInfStackContainers(gs, cid);
+                        MergeInfStackAll(gs, cid, false);
+                    }
+                    else if ((_tick % 60u) == 30u)
+                    {
+                        MergeInfStackAll(gs, cid, true);
                     }
                 }
                 else
@@ -325,8 +1361,8 @@ namespace ModBridge
                 // Periodic export of dynamic warehouse and currency state
                 if ((_tick % 60u) == 12u)
                 {
-                    ExportDynWarehouse(gs);
-                    ExportDynCurrency(gs);
+                    ExportDynWarehouseAll(gs, false);
+                    ExportDynCurrencyFast(gs);
                 }
             }
             else if (_noclipActive)
@@ -371,8 +1407,8 @@ namespace ModBridge
                     case 7: // MOD_CMD_REFRESH_SNAP
                         if (player != null) UpdateSnapshot(player);
                         else if (lanPlayer != null) UpdateSnapshotLAN(lanPlayer);
-                        ExportDynWarehouse(gs);
-                        ExportDynCurrency(gs);
+                        ExportDynWarehouseAll(gs, true);
+                        ExportDynCurrencyFast(gs);
                         SetStatus(1, "Snapshot refreshed");
                         return 1;
                     case 8: // MOD_CMD_CLEAR_PROP_LOCKS
@@ -385,9 +1421,9 @@ namespace ModBridge
                         if (arg1 != 0) return ApplyPaidUnlock(gs, cid, player);
                         return RestorePaidUnlock(gs);
                     case 11: // MOD_CMD_DEL_WAREHOUSE_ITEM (arg1=count, arg2=boxId, argL=matUID)
-                        return CmdDeleteWarehouseItem(gs, arg1, (long)arg2, (ulong)argL);
+                        return CmdDeleteWarehouseItemV2(gs, cid, arg1, (long)arg2, (ulong)argL);
                     case 12: // MOD_CMD_SET_CURRENCY (arg1=type, arg2=val)
-                        return CmdSetCurrency(gs, arg1, arg2);
+                        return CmdSetCurrencyV2(gs, arg1, arg2);
                 }
             }
             catch (Exception ex)
@@ -401,37 +1437,1337 @@ namespace ModBridge
 
         private static bool IsStorageBoxHomeItem(int nHomeItemId)
         {
-            return nHomeItemId == 120085 || nHomeItemId == 120100 || nHomeItemId == 120215;
+            return nHomeItemId == 120045 || nHomeItemId == 120085 || nHomeItemId == 120100 ||
+                   nHomeItemId == 120135 || nHomeItemId == 120215 || nHomeItemId == 120300;
+        }
+
+        private static bool IsStorageBoxPlacement(HomeItemPlacementData p)
+        {
+            if (p == null || p.lInstanceId <= 0) return false;
+            if (IsStorageBoxHomeItem(p.nHomeItemId)) return true;
+            try
+            {
+                CHomeItemSceneRoot root = CHomeItemSceneRoot.CurrentRoot;
+                if (root != null)
+                {
+                    CHomeItemView view = root.GetView(p.lInstanceId);
+                    if (view != null && view.GetComponent(typeof(IHomeContainerFurniture)) != null)
+                        return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        internal static void RefreshOpenStorageBoxUi()
+        {
+            try
+            {
+                CUIBase boxUI = (CUIMgr.Instance != null) ? CUIMgr.Instance.GetWnd(CUIDefine.eUIWnd.UI_Game_Home_StorageBox) : null;
+                if (boxUI != null && boxUI.IsVisable())
+                {
+                    Type uiType = boxUI.GetType();
+                    if (s_cachedStorageBoxType != uiType || s_miStorageBoxRefresh == null)
+                    {
+                        s_cachedStorageBoxType = uiType;
+                        s_miStorageBoxRefresh = uiType.GetMethod("RefreshStorageBox", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    }
+                    if (s_miStorageBoxRefresh != null) s_miStorageBoxRefresh.Invoke(boxUI, null);
+                }
+            }
+            catch { }
+        }
+
+        internal static void NotifyWarehouseChanged(IGameSystem gs)
+        {
+            s_whForceDirty = true;
+            if (s_instance != null && gs != null)
+            {
+                s_instance.ExportDynWarehouseAll(gs, true);
+            }
+        }
+
+        // ==================== #6/Perf/Bag+Box V2 Implementations ====================
+        private static int _lastMergeBagCid = 0;
+        private static int _lastMergeBagUidsCount = -1;
+        private static long _lastMergeBoxSig = -1L;
+
+        private static long _lastWhCheckSig = -1L;
+        private static string _lastWhJsonHash = "";
+
+        private uint _activeHttpSeq = 0u;
+        private uint _lastDoneHttpSeq = 0u;
+        private string _realGameUrl1 = null;
+        private string _realDbUrl2 = null;
+        private string _localProxyUrl = null;
+        private int _raffleCountAll = 0;
+        private int _raffleTopSignCount = 0;
+
+        private sealed class WhKey : IEquatable<WhKey>
+        {
+            public long Box;
+            public int CfgId;
+            public int End;
+            public int Refit;
+
+            public bool Equals(WhKey o)
+            {
+                if (ReferenceEquals(o, null)) return false;
+                return Box == o.Box && CfgId == o.CfgId && End == o.End && Refit == o.Refit;
+            }
+
+            public override bool Equals(object o)
+            {
+                return Equals(o as WhKey);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    int h = (int)(Box ^ (Box >> 32));
+                    h = (h * 397) ^ CfgId;
+                    h = (h * 397) ^ End;
+                    h = (h * 397) ^ Refit;
+                    return h;
+                }
+            }
+        }
+
+        private sealed class WhAgg
+        {
+            public long Box;
+            public int CfgId;
+            public int End;
+            public int MaxEnd;
+            public int Refit;
+            public ulong PrimaryUid;
+            public long TotalNum;
+            public int Slots;
+        }
+
+        private static List<ulong> GetContainerUidsDirect(CContainer c)
+        {
+            if (c == null) return null;
+            if (s_fiTickerContUids == null)
+                s_fiTickerContUids = typeof(CContainer).GetField("m_listUIDs", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            return (s_fiTickerContUids != null) ? (s_fiTickerContUids.GetValue(c) as List<ulong>) : null;
+        }
+
+        private static CContainer GetBagContainer(IGameSystem gs, int cid)
+        {
+            if (gs == null || gs.containerSystem == null || cid == 0) return null;
+            CContainerSystem cs = gs.containerSystem as CContainerSystem;
+            var dicData = GetContainerData(cs);
+            sContainerSystemData sdata = null;
+            CContainer cont = null;
+            if (dicData != null && dicData.TryGetValue(cid, out sdata) && sdata != null)
+            {
+                sdata.dicContainer.TryGetValue(eContainerTypeEnum.Bag, out cont);
+            }
+            return cont;
+        }
+
+        private void MergeInfStackAll(IGameSystem gs, int cid, bool silentIfUnchanged)
+        {
+            if (gs == null || gs.materialSystem == null) return;
+
+            bool anyBoxChanged = false;
+            int totalBoxMerged = 0;
+            long boxSig = 0L;
+            CHomeContainerSystem hcs = gs.homeContainerSystem as CHomeContainerSystem;
+            var containers = GetHomeContainers(hcs);
+            if (containers != null && containers.Count > 0)
+            {
+                foreach (CHomeContainer hc in containers.Values)
+                {
+                    if (hc != null) boxSig = (boxSig * 31L) + hc.GetSlotCount();
+                }
+                if (!silentIfUnchanged || s_whForceDirty || boxSig != _lastMergeBoxSig)
+                {
+                    foreach (CHomeContainer hc in containers.Values)
+                    {
+                        if (hc == null) continue;
+                        int before = hc.GetSlotCount();
+                        if (MergeSingleHomeContainer(gs, hc))
+                        {
+                            anyBoxChanged = true;
+                            int after = hc.GetSlotCount();
+                            if (before > after) totalBoxMerged += (before - after);
+                        }
+                    }
+                    long newBoxSig = 0L;
+                    foreach (CHomeContainer hc in containers.Values)
+                    {
+                        if (hc != null) newBoxSig = (newBoxSig * 31L) + hc.GetSlotCount();
+                    }
+                    _lastMergeBoxSig = newBoxSig;
+                }
+            }
+            else
+            {
+                _lastMergeBoxSig = 0L;
+            }
+
+            int bagMerged = 0;
+            if (cid != 0 && IsInShelterNow(gs))
+            {
+                CContainer bag = GetBagContainer(gs, cid);
+                List<ulong> uids = GetContainerUidsDirect(bag);
+                if (bag != null && uids != null)
+                {
+                    if (!silentIfUnchanged || s_whForceDirty || _lastMergeBagCid != cid || uids.Count != _lastMergeBagUidsCount)
+                    {
+                        bagMerged = MergeBagContainerFast(gs, cid, bag, uids);
+                        _lastMergeBagCid = cid;
+                        _lastMergeBagUidsCount = uids.Count;
+                    }
+                }
+            }
+
+            if (anyBoxChanged || bagMerged > 0)
+            {
+                s_whForceDirty = true;
+                if (anyBoxChanged) RefreshOpenStorageBoxUi();
+                if (bagMerged > 0)
+                {
+                    try
+                    {
+                        if (CClientGlobal.Instance != null && CClientGlobal.Instance.GetEventSystem != null)
+                        {
+                            eMSG.sContainer_Change ev = default(eMSG.sContainer_Change);
+                            ev.nCustomID = cid;
+                            ev.eContainer = eContainerTypeEnum.Bag;
+                            ev.nMaterialConfigID = 0;
+                            CClientGlobal.Instance.GetEventSystem.FireExecoute(eMSG.EVENT.Container_Change, 0, ev);
+                        }
+                    }
+                    catch { }
+                }
+                ExportDynWarehouseAll(gs, true);
+                if (!silentIfUnchanged)
+                {
+                    SetStatus(1, "仓库无限堆叠已合并 " + (totalBoxMerged + bagMerged).ToString() + " 个重复槽位");
+                }
+            }
+        }
+
+        private int MergeBagContainerFast(IGameSystem gs, int cid, CContainer bag, List<ulong> uids)
+        {
+            if (uids == null || uids.Count <= 1) return 0;
+
+            Dictionary<ulong, bool> protectedDbids = null;
+            try
+            {
+                if (gs.characterSystem != null)
+                {
+                    CCharacterSystemData cdata = gs.characterSystem.GetCharacterSystemData(cid);
+                    if (cdata != null)
+                    {
+                        protectedDbids = new Dictionary<ulong, bool>();
+                        if (cdata.nMountDBID != 0UL) protectedDbids[cdata.nMountDBID] = true;
+                        if (cdata.listQuicklyShortcutDBID != null)
+                        {
+                            for (int q = 0; q < cdata.listQuicklyShortcutDBID.Count; q++)
+                            {
+                                if (cdata.listQuicklyShortcutDBID[q] != 0UL)
+                                    protectedDbids[cdata.listQuicklyShortcutDBID[q]] = true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            IRefitSystem refit = gs.refitSystem;
+            Dictionary<long, CMaterial> firstByKey = new Dictionary<long, CMaterial>(256);
+            List<ulong> kept = new List<ulong>(uids.Count);
+            List<ulong> toDestroy = new List<ulong>(256);
+
+            for (int i = 0; i < uids.Count; i++)
+            {
+                ulong uid = uids[i];
+                CMaterial m = gs.materialSystem.GetMaterialByUID(uid);
+                if (m == null || m.nNumber <= 0)
+                {
+                    if (m != null) toDestroy.Add(uid);
+                    continue;
+                }
+                if (refit != null && refit.IsRefit(uid))
+                {
+                    kept.Add(uid);
+                    continue;
+                }
+                // Keep mounted / quick-shortcut items unmerged as their primary slot if needed
+                long key = (((long)m.nConfigID) << 32) ^ (long)((uint)m.nEndurance);
+                CMaterial existing = null;
+                if (firstByKey.TryGetValue(key, out existing) && existing != null)
+                {
+                    bool curProtected = (protectedDbids != null && protectedDbids.ContainsKey(m.DBID));
+                    bool exProtected = (protectedDbids != null && protectedDbids.ContainsKey(existing.DBID));
+                    if (curProtected && !exProtected)
+                    {
+                        // Leave shortcut slot distinct rather than destroying its DBID
+                        kept.Add(uid);
+                        firstByKey[key] = m;
+                        continue;
+                    }
+                    long tot = (long)existing.nNumber + (long)m.nNumber;
+                    if (tot <= (long)int.MaxValue)
+                    {
+                        existing.SetNum((int)tot, false);
+                        toDestroy.Add(uid);
+                        continue;
+                    }
+                    firstByKey[key] = m;
+                }
+                else
+                {
+                    firstByKey[key] = m;
+                }
+                kept.Add(uid);
+            }
+
+            if (toDestroy.Count == 0 && kept.Count == uids.Count) return 0;
+
+            for (int i = 0; i < toDestroy.Count; i++)
+            {
+                try { gs.materialSystem.DestroyMaterial(toDestroy[i], true); } catch { }
+            }
+            uids.Clear();
+            uids.AddRange(kept);
+            ModContainerSystem.MarkSaveTag(bag);
+            return toDestroy.Count;
+        }
+
+        private unsafe void ExportDynWarehouseAll(IGameSystem gs, bool force)
+        {
+            if (gs == null || gs.materialSystem == null) return;
+            try
+            {
+                byte* b = Shm();
+                if (b == null) return;
+                string dir = ReadShmDynDir(b);
+                if (string.IsNullOrEmpty(dir)) return;
+
+                int cid = *(int*)(b + 0x14);
+                CContainer bag = GetBagContainer(gs, cid);
+                List<ulong> bagUids = GetContainerUidsDirect(bag);
+                int bagCnt = (bagUids != null) ? bagUids.Count : 0;
+                ulong bFirst = (bagCnt > 0) ? bagUids[0] : 0UL;
+                ulong bLast = (bagCnt > 0) ? bagUids[bagCnt - 1] : 0UL;
+
+                CHomeContainerSystem hcs = gs.homeContainerSystem as CHomeContainerSystem;
+                var containers = GetHomeContainers(hcs);
+                int boxCount = (containers != null) ? containers.Count : 0;
+                long boxSlots = 0L;
+                if (containers != null)
+                {
+                    foreach (CHomeContainer hc in containers.Values)
+                    {
+                        if (hc != null) boxSlots += hc.GetSlotCount();
+                    }
+                }
+
+                long sig = ((long)cid * 397L) ^ ((long)bagCnt << 16) ^ (long)(bFirst ^ bLast) ^ (boxSlots << 8) ^ boxCount;
+                string outPath = dir + "/dyn_warehouse.json";
+                if (!force && !s_whForceDirty && sig == _lastWhCheckSig && File.Exists(outPath))
+                {
+                    return;
+                }
+                s_whForceDirty = false;
+                _lastWhCheckSig = sig;
+
+                IRefitSystem refit = gs.refitSystem;
+                Dictionary<WhKey, WhAgg> aggs = new Dictionary<WhKey, WhAgg>(512);
+                List<WhAgg> ordered = new List<WhAgg>(512);
+
+                if (bagUids != null)
+                {
+                    for (int i = 0; i < bagUids.Count; i++)
+                    {
+                        ulong uid = bagUids[i];
+                        CMaterial m = gs.materialSystem.GetMaterialByUID(uid);
+                        if (m == null || m.nNumber <= 0) continue;
+                        int isRefit = (refit != null && refit.IsRefit(uid)) ? 1 : 0;
+                        WhKey k = new WhKey { Box = 0L, CfgId = m.nConfigID, End = m.nEndurance, Refit = isRefit };
+                        WhAgg a = null;
+                        if (aggs.TryGetValue(k, out a) && isRefit == 0)
+                        {
+                            a.TotalNum += m.nNumber;
+                            a.Slots++;
+                        }
+                        else if (isRefit != 0)
+                        {
+                            WhAgg rAgg = new WhAgg
+                            {
+                                Box = 0L, CfgId = m.nConfigID, End = m.nEndurance,
+                                MaxEnd = (m.pConfig != null) ? m.pConfig.nEndurance : 0,
+                                Refit = 1, PrimaryUid = uid, TotalNum = m.nNumber, Slots = 1
+                            };
+                            ordered.Add(rAgg);
+                        }
+                        else
+                        {
+                            a = new WhAgg
+                            {
+                                Box = 0L, CfgId = m.nConfigID, End = m.nEndurance,
+                                MaxEnd = (m.pConfig != null) ? m.pConfig.nEndurance : 0,
+                                Refit = 0, PrimaryUid = uid, TotalNum = m.nNumber, Slots = 1
+                            };
+                            aggs[k] = a;
+                            ordered.Add(a);
+                        }
+                    }
+                }
+
+                // Update box snapshots in Shm (box 0 = Shelter Bag, boxes 1..15 = CHomeContainer boxes)
+                int snapIdx = 0;
+                if (bagCnt > 0 || cid != 0)
+                {
+                    byte* slot0 = b + 0x950;
+                    *(long*)(slot0 + 0) = 0L;
+                    *(int*)(slot0 + 8) = Math.Max(bagCnt, 99999);
+                    *(int*)(slot0 + 12) = bagCnt;
+                    snapIdx = 1;
+                }
+
+                if (containers != null)
+                {
+                    foreach (KeyValuePair<long, CHomeContainer> kv in containers)
+                    {
+                        long boxId = kv.Key;
+                        CHomeContainer hc = kv.Value;
+                        if (hc == null) continue;
+                        int cnt = hc.GetSlotCount();
+                        if (snapIdx < 16)
+                        {
+                            byte* slot = b + 0x950 + snapIdx * 16;
+                            *(long*)(slot + 0) = boxId;
+                            *(int*)(slot + 8) = 40;
+                            *(int*)(slot + 12) = cnt;
+                            snapIdx++;
+                        }
+                        for (int i = 0; i < cnt; i++)
+                        {
+                            ulong uid = hc.GetMaterialUID(i);
+                            CMaterial m = gs.materialSystem.GetMaterialByUID(uid);
+                            if (m == null || m.nNumber <= 0) continue;
+                            int isRefit = (refit != null && refit.IsRefit(uid)) ? 1 : 0;
+                            WhKey k = new WhKey { Box = boxId, CfgId = m.nConfigID, End = m.nEndurance, Refit = isRefit };
+                            WhAgg a = null;
+                            if (isRefit == 0 && aggs.TryGetValue(k, out a))
+                            {
+                                a.TotalNum += m.nNumber;
+                                a.Slots++;
+                            }
+                            else if (isRefit != 0)
+                            {
+                                ordered.Add(new WhAgg
+                                {
+                                    Box = boxId, CfgId = m.nConfigID, End = m.nEndurance,
+                                    MaxEnd = (m.pConfig != null) ? m.pConfig.nEndurance : 0,
+                                    Refit = 1, PrimaryUid = uid, TotalNum = m.nNumber, Slots = 1
+                                });
+                            }
+                            else
+                            {
+                                a = new WhAgg
+                                {
+                                    Box = boxId, CfgId = m.nConfigID, End = m.nEndurance,
+                                    MaxEnd = (m.pConfig != null) ? m.pConfig.nEndurance : 0,
+                                    Refit = 0, PrimaryUid = uid, TotalNum = m.nNumber, Slots = 1
+                                };
+                                aggs[k] = a;
+                                ordered.Add(a);
+                            }
+                        }
+                    }
+                }
+                *(int*)(b + 0x948) = snapIdx;
+
+                ordered.Sort(delegate(WhAgg x, WhAgg y)
+                {
+                    int c = x.Box.CompareTo(y.Box);
+                    if (c != 0) return c;
+                    c = x.CfgId.CompareTo(y.CfgId);
+                    if (c != 0) return c;
+                    c = y.End.CompareTo(x.End);
+                    if (c != 0) return c;
+                    return x.PrimaryUid.CompareTo(y.PrimaryUid);
+                });
+
+                StringBuilder sb = new StringBuilder(ordered.Count * 76 + 16);
+                sb.Append('[');
+                for (int i = 0; i < ordered.Count; i++)
+                {
+                    WhAgg it = ordered[i];
+                    if (i > 0) sb.Append(',');
+                    sb.Append("{\"uid\":\"").Append(it.PrimaryUid.ToString())
+                      .Append("\",\"box\":").Append(it.Box)
+                      .Append(",\"id\":").Append(it.CfgId)
+                      .Append(",\"num\":").Append(it.TotalNum)
+                      .Append(",\"end\":").Append(it.End)
+                      .Append(",\"maxEnd\":").Append(it.MaxEnd)
+                      .Append(",\"refit\":").Append(it.Refit)
+                      .Append(",\"slots\":").Append(it.Slots).Append('}');
+                }
+                sb.Append(']');
+                string json = sb.ToString();
+                if (force || json != _lastWhJsonHash || !File.Exists(outPath))
+                {
+                    _lastWhJsonHash = json;
+                    WriteAtomicText(outPath, json);
+                    BumpDynSeq(b);
+                }
+            }
+            catch { }
+        }
+
+        private int CmdDeleteWarehouseItemV2(IGameSystem gs, int cid, int delCount, long boxId, ulong matUID)
+        {
+            if (gs == null || gs.materialSystem == null || delCount <= 0)
+            {
+                SetStatus(-1, "Invalid delete parameters");
+                return -1;
+            }
+            CMaterial target = gs.materialSystem.GetMaterialByUID(matUID);
+            if (target == null)
+            {
+                SetStatus(-2, "Item UID not found");
+                return -2;
+            }
+            int cfgId = target.nConfigID;
+            int endVal = target.nEndurance;
+            IRefitSystem refit = gs.refitSystem;
+            bool targetRefit = (refit != null && refit.IsRefit(matUID));
+            int remaining = delCount;
+            int removedTotal = 0;
+
+            if (boxId == 0L)
+            {
+                CContainer bag = GetBagContainer(gs, cid);
+                List<ulong> uids = GetContainerUidsDirect(bag);
+                if (bag == null || uids == null)
+                {
+                    SetStatus(-2, "Bag container not found");
+                    return -2;
+                }
+                // Deduct primary UID first
+                if (bag.Contain(matUID))
+                {
+                    int take = Mathf.Min(remaining, target.nNumber);
+                    if (take > 0)
+                    {
+                        if (target.nNumber > take)
+                        {
+                            target.SetNum(target.nNumber - take, false);
+                            remaining -= take;
+                            removedTotal += take;
+                        }
+                        else
+                        {
+                            remaining -= target.nNumber;
+                            removedTotal += target.nNumber;
+                            uids.Remove(matUID);
+                            gs.materialSystem.DestroyMaterial(matUID, true);
+                        }
+                    }
+                }
+                // If unstacked items were grouped in UI, deduct remaining from matching un-refitted slots in O(N)
+                if (remaining > 0 && !targetRefit)
+                {
+                    List<ulong> kept = new List<ulong>(uids.Count);
+                    for (int i = 0; i < uids.Count; i++)
+                    {
+                        ulong uid = uids[i];
+                        if (remaining <= 0)
+                        {
+                            kept.Add(uid);
+                            continue;
+                        }
+                        CMaterial m = gs.materialSystem.GetMaterialByUID(uid);
+                        if (m != null && m.nConfigID == cfgId && m.nEndurance == endVal &&
+                            (refit == null || !refit.IsRefit(uid)))
+                        {
+                            if (m.nNumber > remaining)
+                            {
+                                m.SetNum(m.nNumber - remaining, false);
+                                removedTotal += remaining;
+                                remaining = 0;
+                                kept.Add(uid);
+                            }
+                            else
+                            {
+                                remaining -= m.nNumber;
+                                removedTotal += m.nNumber;
+                                gs.materialSystem.DestroyMaterial(uid, true);
+                            }
+                            continue;
+                        }
+                        kept.Add(uid);
+                    }
+                    if (kept.Count != uids.Count)
+                    {
+                        uids.Clear();
+                        uids.AddRange(kept);
+                    }
+                }
+                ModContainerSystem.MarkSaveTag(bag);
+                try
+                {
+                    if (CClientGlobal.Instance != null && CClientGlobal.Instance.GetEventSystem != null)
+                    {
+                        eMSG.sContainer_Change ev = default(eMSG.sContainer_Change);
+                        ev.nCustomID = cid;
+                        ev.eContainer = eContainerTypeEnum.Bag;
+                        ev.nMaterialConfigID = cfgId;
+                        CClientGlobal.Instance.GetEventSystem.FireExecoute(eMSG.EVENT.Container_Change, 0, ev);
+                    }
+                }
+                catch { }
+            }
+            else
+            {
+                CHomeContainer hc = (gs.homeContainerSystem != null) ? gs.homeContainerSystem.TryGetContainer(boxId) : null;
+                if (hc == null)
+                {
+                    SetStatus(-2, "StorageBox not found");
+                    return -2;
+                }
+                List<ulong> matchUids = new List<ulong>(16);
+                matchUids.Add(matUID);
+                if (!targetRefit)
+                {
+                    int slotCnt = hc.GetSlotCount();
+                    for (int i = 0; i < slotCnt; i++)
+                    {
+                        ulong u = hc.GetMaterialUID(i);
+                        if (u == matUID) continue;
+                        CMaterial m = gs.materialSystem.GetMaterialByUID(u);
+                        if (m != null && m.nConfigID == cfgId && m.nEndurance == endVal &&
+                            (refit == null || !refit.IsRefit(u)))
+                        {
+                            matchUids.Add(u);
+                        }
+                    }
+                }
+                for (int i = 0; i < matchUids.Count && remaining > 0; i++)
+                {
+                    ulong u = matchUids[i];
+                    CMaterial m = gs.materialSystem.GetMaterialByUID(u);
+                    if (m == null) continue;
+                    if (m.nNumber > remaining)
+                    {
+                        m.SetNum(m.nNumber - remaining, false);
+                        removedTotal += remaining;
+                        remaining = 0;
+                    }
+                    else
+                    {
+                        remaining -= m.nNumber;
+                        removedTotal += m.nNumber;
+                        hc.RemoveMaterial(u);
+                        gs.materialSystem.DestroyMaterial(u, true);
+                    }
+                }
+                RefreshOpenStorageBoxUi();
+            }
+
+            s_whForceDirty = true;
+            ExportDynWarehouseAll(gs, true);
+            SetStatus(1, "Deleted warehouse item x" + removedTotal.ToString());
+            return (removedTotal > 0) ? 1 : -2;
+        }
+
+        private int CmdSetCurrencyV2(IGameSystem gs, int ctype, int val)
+        {
+            if (gs == null || gs.paySystem == null)
+            {
+                SetStatus(-2, "PaySystem null");
+                return -2;
+            }
+            if (val < 0) val = 0;
+            ModPaySystem mps = gs.paySystem as ModPaySystem;
+            if (mps != null)
+            {
+                mps.ForceSet(ctype, val);
+            }
+            else
+            {
+                IPaySystem ps = gs.paySystem;
+                if (ctype == 0) ps.SetDiamondNum(val);
+                else if (ctype == 1) ps.SetGardenCoinNum(val);
+                else if (ctype == 2) ps.SetGardenPointNum(val);
+                else if (ctype == 3) ps.SetCumulativePayment(val);
+            }
+            ExportDynCurrencyFast(gs);
+            SetStatus(1, "Currency updated");
+            return 1;
+        }
+
+        private string _lastCurrencyJson = "";
+        private unsafe void ExportDynCurrencyFast(IGameSystem gs)
+        {
+            if (gs == null || gs.paySystem == null) return;
+            try
+            {
+                byte* b = Shm();
+                if (b == null) return;
+                string dir = ReadShmDynDir(b);
+                if (string.IsNullOrEmpty(dir)) return;
+
+                IPaySystem ps = gs.paySystem;
+                int d = ps.GetDiamondNum();
+                int gc = ps.GetGardenCoinNum();
+                int gp = ps.GetGardenPointNum();
+                int cp = 0;
+                ModPaySystem mps = ps as ModPaySystem;
+                if (mps != null)
+                {
+                    cp = mps.GetCumulativePayment();
+                }
+                else
+                {
+                    FieldInfo fi = typeof(CPaySystem).GetField("m_nCumulativePayment", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    if (fi != null)
+                    {
+                        try { cp = ((inte)fi.GetValue(ps)).GetNum(); } catch { }
+                    }
+                }
+                string json = "{\"diamond\":" + d.ToString() + ",\"gardenCoin\":" + gc.ToString() +
+                              ",\"gardenPoint\":" + gp.ToString() + ",\"cumulativePayment\":" + cp.ToString() + "}";
+                if (json != _lastCurrencyJson)
+                {
+                    _lastCurrencyJson = json;
+                    WriteAtomicText(dir + "/dyn_currency.json", json);
+                }
+            }
+            catch { }
+        }
+
+        // ==================== #6 Network Currency Interceptor (ModHttpBridge) ====================
+        private static unsafe void WriteHttpBridgeResponse(ulong bridgePtr, uint seq, int status, bool bSucc, byte[] resStream)
+        {
+            if (bridgePtr == 0UL) return;
+            try
+            {
+                byte* hb = (byte*)bridgePtr;
+                if (*(uint*)(hb + 0x08) != seq) return;
+                byte[] outPayload = null;
+                if (status == 200)
+                {
+                    byte[] body = resStream ?? new byte[0];
+                    DNetwork.sNetwork_Head_Res hres = new DNetwork.sNetwork_Head_Res();
+                    hres.bSucc = bSucc;
+                    hres.szSignMD5 = (body.Length > 0) ? CMD5Util.MD5(body) : string.Empty;
+                    byte[] hbytes = CStreamUtil.StructToBytes(hres);
+                    outPayload = new byte[hbytes.Length + body.Length];
+                    Array.Copy(hbytes, 0, outPayload, 0, hbytes.Length);
+                    if (body.Length > 0) Array.Copy(body, 0, outPayload, hbytes.Length, body.Length);
+                }
+                int len = (outPayload != null) ? Mathf.Min(outPayload.Length, 4 * 1024 * 1024) : 0;
+                for (int i = 0; i < len; i++) hb[0x10020 + i] = outPayload[i];
+                *(int*)(hb + 0x10) = status;
+                *(uint*)(hb + 0x18) = (uint)len;
+                Thread.MemoryBarrier();
+                *(uint*)(hb + 0x04) = 2u; // MOD_HTTP_STATE_RESP_READY
+            }
+            catch { }
+        }
+
+        private sealed class ModForwardHandler : INetworkHandler
+        {
+            private readonly ModTicker _owner;
+            private readonly ulong _bridgePtr;
+            private readonly uint _seq;
+
+            public ModForwardHandler(ModTicker owner, ulong bridgePtr, uint seq)
+            {
+                _owner = owner;
+                _bridgePtr = bridgePtr;
+                _seq = seq;
+            }
+
+            public void OnHttpRequestSucc(int nCommand, byte[] resStream, byte[] reqStream)
+            {
+                WriteHttpBridgeResponse(_bridgePtr, _seq, 200, true, resStream);
+                if (_owner != null) _owner._activeHttpSeq = 0u;
+                IGameSystem gs = CGameSystem.Instance;
+                if (gs != null && _owner != null) _owner.ExportDynCurrencyFast(gs);
+            }
+
+            public void OnHttpRequestFail(int nCommand, uint nErrorCode, string szMsg, byte[] reqStream, byte[] resStream)
+            {
+                try
+                {
+                    DNetwork.sNetwork_Error_Res err = new DNetwork.sNetwork_Error_Res();
+                    err.nCode = nErrorCode;
+                    err.szMsg = szMsg ?? string.Empty;
+                    byte[] ebytes = CStreamUtil.StructToBytes(err);
+                    WriteHttpBridgeResponse(_bridgePtr, _seq, 200, false, ebytes);
+                }
+                catch
+                {
+                    WriteHttpBridgeResponse(_bridgePtr, _seq, 502, false, null);
+                }
+                if (_owner != null) _owner._activeHttpSeq = 0u;
+            }
+
+            public void OnHttpRequestError(int nCommand, string szMsg, byte[] reqStream)
+            {
+                WriteHttpBridgeResponse(_bridgePtr, _seq, 502, false, null);
+                if (_owner != null) _owner._activeHttpSeq = 0u;
+            }
+        }
+
+        private void SyncNetworkMgrUrl()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(_localProxyUrl)) return;
+                if (s_fiNetInstance == null)
+                    s_fiNetInstance = typeof(CNetworkMgr).GetField("_Instance", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+                CNetworkMgr nm = (s_fiNetInstance != null) ? (s_fiNetInstance.GetValue(null) as CNetworkMgr) : null;
+                if (nm == null) return;
+
+                if (s_fiNetUrls == null)
+                    s_fiNetUrls = typeof(CNetworkMgr).GetField("m_dicUrl", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                var dic = (s_fiNetUrls != null) ? (s_fiNetUrls.GetValue(nm) as Dictionary<DNetwork.eClientRequireUrl, string>) : null;
+                if (dic == null) return;
+
+                string localGsUrl = _localProxyUrl + "gs";
+                string prefUrl = PlayerPrefs.GetString("GameServer", string.Empty);
+                if (!string.IsNullOrEmpty(prefUrl) && !prefUrl.StartsWith("http://127.0.0.1:"))
+                {
+                    _realGameUrl1 = prefUrl;
+                    PlayerPrefs.SetString("GameServer", string.Empty);
+                    nm.SetUrl((DNetwork.eClientRequireUrl)99, _realGameUrl1);
+                    nm.SetUrl((DNetwork.eClientRequireUrl)1, localGsUrl);
+                }
+
+                string curUrl = null;
+                dic.TryGetValue((DNetwork.eClientRequireUrl)1, out curUrl);
+                if (!string.IsNullOrEmpty(curUrl) && !curUrl.StartsWith("http://127.0.0.1:"))
+                {
+                    _realGameUrl1 = curUrl;
+                    nm.SetUrl((DNetwork.eClientRequireUrl)99, _realGameUrl1);
+                    nm.SetUrl((DNetwork.eClientRequireUrl)1, localGsUrl);
+                }
+                else if (curUrl != localGsUrl && !string.IsNullOrEmpty(_realGameUrl1))
+                {
+                    nm.SetUrl((DNetwork.eClientRequireUrl)99, _realGameUrl1);
+                    nm.SetUrl((DNetwork.eClientRequireUrl)1, localGsUrl);
+                }
+
+                string localDbUrl = _localProxyUrl + "db";
+                string prefDbUrl = PlayerPrefs.GetString("DBServer", string.Empty);
+                if (!string.IsNullOrEmpty(prefDbUrl) && !prefDbUrl.StartsWith("http://127.0.0.1:"))
+                {
+                    _realDbUrl2 = prefDbUrl;
+                    PlayerPrefs.SetString("DBServer", string.Empty);
+                    nm.SetUrl((DNetwork.eClientRequireUrl)98, _realDbUrl2);
+                    nm.SetUrl((DNetwork.eClientRequireUrl)2, localDbUrl);
+                }
+
+                string curDbUrl = null;
+                dic.TryGetValue((DNetwork.eClientRequireUrl)2, out curDbUrl);
+                if (!string.IsNullOrEmpty(curDbUrl) && !curDbUrl.StartsWith("http://127.0.0.1:"))
+                {
+                    _realDbUrl2 = curDbUrl;
+                    nm.SetUrl((DNetwork.eClientRequireUrl)98, _realDbUrl2);
+                    nm.SetUrl((DNetwork.eClientRequireUrl)2, localDbUrl);
+                }
+                else if (curDbUrl != localDbUrl)
+                {
+                    if (!string.IsNullOrEmpty(_realDbUrl2))
+                        nm.SetUrl((DNetwork.eClientRequireUrl)98, _realDbUrl2);
+                    nm.SetUrl((DNetwork.eClientRequireUrl)2, localDbUrl);
+                }
+            }
+            catch { }
+        }
+
+        private unsafe void PollHttpBridge(byte* b, IGameSystem gs)
+        {
+            if (b == null) return;
+            ulong hbPtr = *(ulong*)(b + 0x38);
+            if (hbPtr == 0UL) return;
+
+            byte* hb = (byte*)hbPtr;
+            uint port = *(uint*)(hb + 0x00);
+            if (port != 0u && string.IsNullOrEmpty(_localProxyUrl))
+            {
+                _localProxyUrl = "http://127.0.0.1:" + port.ToString() + "/";
+                Debug.Log("[ModBridge] Local HTTP proxy URL=" + _localProxyUrl);
+            }
+            SyncNetworkMgrUrl();
+
+            Thread.MemoryBarrier();
+            uint st = *(uint*)(hb + 0x04);
+            if (st != 1u) return;
+
+            uint seq = *(uint*)(hb + 0x08);
+            if (seq == _activeHttpSeq || seq == _lastDoneHttpSeq) return;
+
+            int cmd = *(int*)(hb + 0x0C);
+            uint reqLen = *(uint*)(hb + 0x14);
+            uint routeTag = *(uint*)(hb + 0x1C);
+            if (reqLen > 65536u)
+            {
+                _lastDoneHttpSeq = seq;
+                WriteHttpBridgeResponse(hbPtr, seq, 502, false, null);
+                return;
+            }
+
+            byte[] fullBody = new byte[reqLen];
+            for (int i = 0; i < (int)reqLen; i++) fullBody[i] = hb[0x20 + i];
+
+            uint flags = *(uint*)(b + 0x18);
+            bool antiCheatOn = (flags & 1u) == 0u;
+            bool blockCloudOn = (flags & 2048u) == 0u;
+
+            if (blockCloudOn && (cmd == 9 || cmd == 10 || cmd == 115))
+            {
+                _lastDoneHttpSeq = seq;
+                try
+                {
+                    if (CUIMgr.Instance != null)
+                    {
+                        var tipWnd = CUIMgr.Instance.GetWnd(CUIDefine.eUIWnd.UI_Game_SaveCloudTip);
+                        if (tipWnd != null && tipWnd.IsVisable())
+                        {
+                            GameObject fx = tipWnd.GetNode("Widget_OpenEffect");
+                            if (fx == null || !fx.activeSelf)
+                                tipWnd.Hide();
+                        }
+                    }
+                }
+                catch { }
+                Debug.Log("[ModBridge] Blocked Cloud Save upload cmd=" + cmd);
+                byte[] errBytes = CStreamUtil.StructToBytes(new DNetwork.sNetwork_Error_Res
+                {
+                    nCode = 9001u,
+                    szMsg = "反作弊保护：已100%拦截云存档上传"
+                });
+                WriteHttpBridgeResponse(hbPtr, seq, 200, false, errBytes);
+                return;
+            }
+
+            if (antiCheatOn && (cmd == 44 || cmd == 45 || cmd == 214 || cmd == 19 || cmd == 20))
+            {
+                _lastDoneHttpSeq = seq;
+                Debug.Log("[ModBridge] Blocked AntiCheat/Log upload cmd=" + cmd);
+                byte[] errBytes = CStreamUtil.StructToBytes(new DNetwork.sNetwork_Error_Res
+                {
+                    nCode = 9002u,
+                    szMsg = "Blocked by Mod"
+                });
+                WriteHttpBridgeResponse(hbPtr, seq, 200, false, errBytes);
+                return;
+            }
+
+            byte[] innerReq = fullBody;
+            try
+            {
+                CStreamReader sr = new CStreamReader(fullBody);
+                sr.Pop<DNetwork.sNetwork_Head_Req>();
+                int left = sr.GetLengthLeft();
+                if (left >= 0 && left <= fullBody.Length)
+                {
+                    innerReq = new byte[left];
+                    if (left > 0) Array.Copy(fullBody, fullBody.Length - left, innerReq, 0, left);
+                }
+            }
+            catch { }
+
+            if (routeTag != 2u)
+            {
+                bool handled = false;
+                bool bSucc = false;
+                byte[] resStream = null;
+                TryHandleLocalCurrencyCmd(gs, cmd, innerReq, out handled, out bSucc, out resStream);
+                if (handled)
+                {
+                    _lastDoneHttpSeq = seq;
+                    if (bSucc)
+                    {
+                        WriteHttpBridgeResponse(hbPtr, seq, 200, true, resStream);
+                        ExportDynCurrencyFast(gs);
+                    }
+                    else
+                    {
+                        byte[] errBytes = CStreamUtil.StructToBytes(new DNetwork.sNetwork_Error_Res { nCode = 1001u, szMsg = "本地货币余额不足" });
+                        WriteHttpBridgeResponse(hbPtr, seq, 200, false, errBytes);
+                    }
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(_realGameUrl1) || CNetworkMgr.Instance == null)
+                {
+                    _lastDoneHttpSeq = seq;
+                    WriteHttpBridgeResponse(hbPtr, seq, 502, false, null);
+                    return;
+                }
+
+                _activeHttpSeq = seq;
+                _lastDoneHttpSeq = seq;
+                CNetworkMgr.Instance.SendRequest(new ModForwardHandler(this, hbPtr, seq), (DNetwork.eClientRequireUrl)99, cmd, innerReq);
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(_realDbUrl2) || CNetworkMgr.Instance == null)
+                {
+                    _lastDoneHttpSeq = seq;
+                    WriteHttpBridgeResponse(hbPtr, seq, 502, false, null);
+                    return;
+                }
+
+                _activeHttpSeq = seq;
+                _lastDoneHttpSeq = seq;
+                CNetworkMgr.Instance.SendRequest(new ModForwardHandler(this, hbPtr, seq), (DNetwork.eClientRequireUrl)98, cmd, innerReq);
+            }
+        }
+
+        private static sMarket_RafflePoolConfig RollRaffleReward(IGameDataCenter dc, int poolId, int groupId, ref int topSignCount)
+        {
+            if (dc == null) return null;
+            var loader = dc.GetConfigLoader<CMarket_RafflePoolConfigLoader>(eGameConfigType.Market_RafflePool);
+            if (loader == null) return null;
+            if (s_fiRafflePoolDic == null)
+                s_fiRafflePoolDic = typeof(CMarket_RafflePoolConfigLoader).GetField("m_dicConfigs", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            var dic = (s_fiRafflePoolDic != null) ? (s_fiRafflePoolDic.GetValue(loader) as Dictionary<int, sMarket_RafflePoolConfig>) : null;
+            if (dic == null || dic.Count == 0) return null;
+
+            List<sMarket_RafflePoolConfig> candidates = new List<sMarket_RafflePoolConfig>(16);
+            int totalWeight = 0;
+            sMarket_RafflePoolConfig topItem = null;
+            foreach (sMarket_RafflePoolConfig cfg in dic.Values)
+            {
+                if (cfg != null && cfg.nPoolId == poolId && (cfg.nPoolGroupId == 0 || cfg.nPoolGroupId == groupId))
+                {
+                    candidates.Add(cfg);
+                    totalWeight += Mathf.Max(1, cfg.nWeight);
+                    if (cfg.nTopSign > 0) topItem = cfg;
+                }
+            }
+            if (candidates.Count == 0)
+            {
+                foreach (sMarket_RafflePoolConfig cfg in dic.Values)
+                {
+                    if (cfg != null && cfg.nPoolId == poolId)
+                    {
+                        candidates.Add(cfg);
+                        totalWeight += Mathf.Max(1, cfg.nWeight);
+                        if (cfg.nTopSign > 0) topItem = cfg;
+                    }
+                }
+            }
+            if (candidates.Count == 0) return null;
+
+            topSignCount++;
+            if (topItem != null && topItem.nTopSign > 0 && topSignCount >= topItem.nTopSign)
+            {
+                topSignCount = 0;
+                return topItem;
+            }
+            int roll = UnityEngine.Random.Range(0, totalWeight);
+            int acc = 0;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                acc += Mathf.Max(1, candidates[i].nWeight);
+                if (roll < acc)
+                {
+                    if (candidates[i].nTopSign > 0) topSignCount = 0;
+                    return candidates[i];
+                }
+            }
+            return candidates[0];
+        }
+
+        private static int FindRaffleCostPerDraw(IGameDataCenter dc, int poolId)
+        {
+            if (dc == null) return 0;
+            var loader = dc.GetConfigLoader<CMarket_RaffleTraderConfigLoader>(eGameConfigType.Market_RaffleTrader);
+            if (loader == null) return 0;
+            if (s_fiRaffleTraderDic == null)
+                s_fiRaffleTraderDic = typeof(CMarket_RaffleTraderConfigLoader).GetField("m_dicConfigs", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            var dic = (s_fiRaffleTraderDic != null) ? (s_fiRaffleTraderDic.GetValue(loader) as Dictionary<int, sMarket_RaffleTraderConfig>) : null;
+            if (dic == null) return 0;
+            foreach (sMarket_RaffleTraderConfig cfg in dic.Values)
+            {
+                if (cfg != null && cfg.nPoolId == poolId) return cfg.nGardenCoinNum;
+            }
+            return 0;
+        }
+
+        private void SetCurrencyChecked(IGameSystem gs, int ctype, int val)
+        {
+            if (gs == null || gs.paySystem == null) return;
+            ModPaySystem mps = gs.paySystem as ModPaySystem;
+            if (mps != null) mps.ForceSet(ctype, val);
+            else if (ctype == 0) gs.paySystem.SetDiamondNum(val);
+            else if (ctype == 1) gs.paySystem.SetGardenCoinNum(val);
+            else if (ctype == 2) gs.paySystem.SetGardenPointNum(val);
+        }
+
+        private void TryHandleLocalCurrencyCmd(IGameSystem gs, int cmd, byte[] innerReq, out bool handled, out bool bSucc, out byte[] resStream)
+        {
+            handled = false;
+            bSucc = false;
+            resStream = null;
+            if (gs == null || gs.paySystem == null || CClientGlobal.Instance == null || CClientGlobal.Instance.GetGameDataCenter == null)
+                return;
+            if (!ModPaySystem.IsAnyCurrencyModded())
+                return;
+
+            IGameDataCenter dc = CClientGlobal.Instance.GetGameDataCenter;
+            IPaySystem pay = gs.paySystem;
+            const string SALT = "3j5k2b1n7m8s4f6d5e3r2t1z";
+
+            try
+            {
+                if (cmd == 7) // RequestExchange (NPC Diamond Shop)
+                {
+                    handled = true;
+                    DNetwork.sNetwork_RequestExchange_Req req = new CStreamReader(innerReq).Pop<DNetwork.sNetwork_RequestExchange_Req>();
+                    var loader = dc.GetConfigLoader<CExchangeConfigLoader>(eGameConfigType.Exchange);
+                    sExchangeConfig cfg = (loader != null) ? loader.GetConfig(req.nExchangeID) : null;
+                    int cost = (cfg != null) ? (int)cfg.nDiamond : req.nPrice;
+                    if (cost < 0) cost = 0;
+                    int cur = pay.GetDiamondNum();
+                    if (cur < cost) { bSucc = false; return; }
+                    int next = cur - cost;
+                    SetCurrencyChecked(gs, 0, next);
+                    DNetwork.sNetwork_RequestExchange_Res res = new DNetwork.sNetwork_RequestExchange_Res();
+                    res.nExchangeID = req.nExchangeID;
+                    res.nDiamond = next;
+                    res.szSignMD5 = CMD5Util.MD5(new List<string> { res.nExchangeID.ToString(), res.nDiamond.ToString(), SALT });
+                    resStream = CStreamUtil.StructToBytes(res);
+                    bSucc = true;
+                    return;
+                }
+                if (cmd == 32) // RequestGardenTrade (Garden Diamond Trader)
+                {
+                    handled = true;
+                    DNetwork.sNetwork_RequestGardenTrade_Req req = new CStreamReader(innerReq).Pop<DNetwork.sNetwork_RequestGardenTrade_Req>();
+                    var loader = dc.GetConfigLoader<CMarket_ExchangeDepotConfigLoader>(eGameConfigType.Market_ExchangeDepot);
+                    sMarket_ExchangeDepotConfig cfg = (loader != null) ? loader.GetConfig(req.nTrade_id) : null;
+                    int cost = (cfg != null && cfg.nCostDiamond > 0) ? cfg.nCostDiamond : 0;
+                    int cur = pay.GetDiamondNum();
+                    if (cur < cost) { bSucc = false; return; }
+                    int next = cur - cost;
+                    SetCurrencyChecked(gs, 0, next);
+                    DNetwork.sNetwork_RequestGardenTrade_Res res = new DNetwork.sNetwork_RequestGardenTrade_Res();
+                    res.nTrade_id = req.nTrade_id;
+                    res.nDiamond = next;
+                    res.nGardenCoin = pay.GetGardenCoinNum();
+                    res.nGardenPoint = pay.GetGardenPointNum();
+                    res.szSignMD5 = string.Empty;
+                    resStream = CStreamUtil.StructToBytes(res);
+                    bSucc = true;
+                    return;
+                }
+                if (cmd == 38) // RequestGardenPointExchange (Garden Point Shop)
+                {
+                    handled = true;
+                    DNetwork.sNetwork_RequestGardenPointExchange_Req req = new CStreamReader(innerReq).Pop<DNetwork.sNetwork_RequestGardenPointExchange_Req>();
+                    var loader = dc.GetConfigLoader<CMarket_GardenPointShopConfigLoader>(eGameConfigType.Market_GardenPointShop);
+                    sMarket_GardenPointShopConfig cfg = (loader != null) ? loader.GetConfig(req.nExchangeId) : null;
+                    int cost = 0;
+                    if (cfg != null)
+                        cost = (cfg.nCostOffPoint > 0 && cfg.nCostOffPoint < cfg.nCostGardenPoint) ? cfg.nCostOffPoint : cfg.nCostGardenPoint;
+                    int cur = pay.GetGardenPointNum();
+                    if (cur < cost) { bSucc = false; return; }
+                    int next = cur - cost;
+                    SetCurrencyChecked(gs, 2, next);
+                    DNetwork.sNetwork_RequestGardenPointExchange_Res res = new DNetwork.sNetwork_RequestGardenPointExchange_Res();
+                    res.nExchangeId = req.nExchangeId;
+                    res.nDiamond = pay.GetDiamondNum();
+                    res.nGardenCoin = pay.GetGardenCoinNum();
+                    res.nGardenPoint = next;
+                    res.szSignMD5 = string.Empty;
+                    resStream = CStreamUtil.StructToBytes(res);
+                    bSucc = true;
+                    return;
+                }
+                if (cmd == 39) // RequestMarketPlay (Garden Mini-Game)
+                {
+                    handled = true;
+                    DNetwork.sNetwork_RequestMarketPlay_Req req = new CStreamReader(innerReq).Pop<DNetwork.sNetwork_RequestMarketPlay_Req>();
+                    var loader = dc.GetConfigLoader<CMarket_PlayConfigLoader>(eGameConfigType.Market_Play);
+                    sMarket_PlayConfig cfg = (loader != null) ? loader.GetConfig(req.nGamerId) : null;
+                    int cost = (cfg != null) ? Mathf.Max(0, cfg.nGardenCoinCost) : 0;
+                    int cur = pay.GetGardenCoinNum();
+                    if (cur < cost) { bSucc = false; return; }
+                    int next = cur - cost;
+                    SetCurrencyChecked(gs, 1, next);
+                    DNetwork.sNetwork_RequestMarketPlay_Res res = new DNetwork.sNetwork_RequestMarketPlay_Res();
+                    res.nGamerId = req.nGamerId;
+                    res.nDiamond = pay.GetDiamondNum();
+                    res.nGardenCoin = next;
+                    res.nGardenPoint = pay.GetGardenPointNum();
+                    resStream = CStreamUtil.StructToBytes(res);
+                    bSucc = true;
+                    return;
+                }
+                if (cmd == 40) // RequestGardenCoinExchange (Material -> GardenCoin)
+                {
+                    handled = true;
+                    DNetwork.sNetwork_RequestGardenCoinExchange_Req req = new CStreamReader(innerReq).Pop<DNetwork.sNetwork_RequestGardenCoinExchange_Req>();
+                    var loader = dc.GetConfigLoader<CMarket_GardenCoinShopConfigLoader>(eGameConfigType.Market_GardenCoinShop);
+                    sMarket_GardenCoinShop cfg = (loader != null) ? loader.GetConfig(req.nTradeId) : null;
+                    int gain = (cfg != null) ? Mathf.Max(0, cfg.nGardenCoinNum) : 0;
+                    int next = pay.GetGardenCoinNum() + gain;
+                    SetCurrencyChecked(gs, 1, next);
+                    DNetwork.sNetwork_RequestGardenCoinExchange_Res res = new DNetwork.sNetwork_RequestGardenCoinExchange_Res();
+                    res.nTradeId = req.nTradeId;
+                    res.nDiamond = pay.GetDiamondNum();
+                    res.nGardenCoin = next;
+                    res.nGardenPoint = pay.GetGardenPointNum();
+                    resStream = CStreamUtil.StructToBytes(res);
+                    bSucc = true;
+                    return;
+                }
+                if (cmd == 48) // RequestActivityPointExchange (Holiday Point Exchange)
+                {
+                    handled = true;
+                    DNetwork.sNetwork_RequestActivityPointExchange_Req req = new CStreamReader(innerReq).Pop<DNetwork.sNetwork_RequestActivityPointExchange_Req>();
+                    int cost = 0;
+                    int matNum = 1;
+                    var impLoader = dc.GetConfigLoader<CHolidayImportantExchangeConfigLoader>(eGameConfigType.HolidayImportantExchange);
+                    sHolidayImportantExchangeConfig impCfg = (impLoader != null) ? impLoader.GetConfig(req.nActivityId) : null;
+                    if (impCfg != null)
+                    {
+                        if (req.nMaterialId == impCfg.nMaterialId1) cost = impCfg.nMaterialPoint1;
+                        else if (req.nMaterialId == impCfg.nMaterialId2) cost = impCfg.nMaterialPoint2;
+                        else if (req.nMaterialId == impCfg.nMaterialId3) cost = impCfg.nMaterialPoint3;
+                        else if (req.nMaterialId == impCfg.nMaterialId4) cost = impCfg.nMaterialPoint4;
+                    }
+                    else
+                    {
+                        var holLoader = dc.GetConfigLoader<CHolidayExchangeConfigLoader>(eGameConfigType.HolidayExchange);
+                        sHolidayExchangeConfig holCfg = (holLoader != null) ? holLoader.GetConfig(req.nActivityId) : null;
+                        if (holCfg != null)
+                        {
+                            if (req.nMaterialId == holCfg.nMaterialId1) { cost = holCfg.nMaterialPoint1; matNum = Mathf.Max(1, holCfg.nMaterialNum1); }
+                            else if (req.nMaterialId == holCfg.nMaterialId2) { cost = holCfg.nMaterialPoint2; matNum = Mathf.Max(1, holCfg.nMaterialNum2); }
+                            else if (req.nMaterialId == holCfg.nMaterialId3) { cost = holCfg.nMaterialPoint3; matNum = Mathf.Max(1, holCfg.nMaterialNum3); }
+                        }
+                    }
+                    int cur = pay.GetGardenPointNum();
+                    if (cur < cost) { bSucc = false; return; }
+                    int next = cur - cost;
+                    SetCurrencyChecked(gs, 2, next);
+                    DNetwork.sNetwork_RequestActivityPointExchange_Res res = new DNetwork.sNetwork_RequestActivityPointExchange_Res();
+                    res.nMaterialId = req.nMaterialId;
+                    res.nMaterialNum = matNum;
+                    res.nGardenPoint = next;
+                    resStream = CStreamUtil.StructToBytes(res);
+                    bSucc = true;
+                    return;
+                }
+                if (cmd == 201 && innerReq != null && innerReq.Length >= 16) // RequestOneRaffleV1
+                {
+                    handled = true;
+                    int nPoolid = BitConverter.ToInt32(innerReq, 8);
+                    int nGroupid = BitConverter.ToInt32(innerReq, 12);
+                    int cost = FindRaffleCostPerDraw(dc, nPoolid);
+                    int curCoin = pay.GetGardenCoinNum();
+                    if (curCoin < cost) { bSucc = false; return; }
+                    sMarket_RafflePoolConfig picked = RollRaffleReward(dc, nPoolid, nGroupid, ref _raffleTopSignCount);
+                    if (picked == null) { bSucc = false; return; }
+                    _raffleCountAll++;
+                    int nextCoin = curCoin - cost;
+                    int nextPt = pay.GetGardenPointNum() + Mathf.Max(0, picked.nGardenPointNum);
+                    SetCurrencyChecked(gs, 1, nextCoin);
+                    if (picked.nGardenPointNum > 0) SetCurrencyChecked(gs, 2, nextPt);
+
+                    HotfixDNetWork.sNetwork_RequestOneRaffleV1_Res res = default(HotfixDNetWork.sNetwork_RequestOneRaffleV1_Res);
+                    res.nPoolid = nPoolid;
+                    res.nGroupid = nGroupid;
+                    res.nRewardId = picked.nRewardId;
+                    res.nRaffle_Count_All = _raffleCountAll;
+                    res.nTopSignRaffleCount = _raffleTopSignCount;
+                    res.nGardenCoin = nextCoin;
+                    res.nGardenPoint = nextPt;
+                    resStream = CStreamUtil.StructToBytes((object)res);
+                    bSucc = true;
+                    return;
+                }
+                if (cmd == 205 && innerReq != null && innerReq.Length >= 16) // RequestTenRaffle
+                {
+                    handled = true;
+                    int nPoolid = BitConverter.ToInt32(innerReq, 8);
+                    int nGroupid = BitConverter.ToInt32(innerReq, 12);
+                    int oneCost = FindRaffleCostPerDraw(dc, nPoolid);
+                    int cost = oneCost * 10;
+                    int curCoin = pay.GetGardenCoinNum();
+                    if (curCoin < cost) { bSucc = false; return; }
+
+                    int[] rewardIds = new int[10];
+                    int bonusPt = 0;
+                    for (int i = 0; i < 10; i++)
+                    {
+                        sMarket_RafflePoolConfig picked = RollRaffleReward(dc, nPoolid, nGroupid, ref _raffleTopSignCount);
+                        if (picked == null) { bSucc = false; return; }
+                        rewardIds[i] = picked.nRewardId;
+                        bonusPt += Mathf.Max(0, picked.nGardenPointNum);
+                    }
+                    _raffleCountAll += 10;
+                    int nextCoin = curCoin - cost;
+                    int nextPt = pay.GetGardenPointNum() + bonusPt;
+                    SetCurrencyChecked(gs, 1, nextCoin);
+                    if (bonusPt > 0) SetCurrencyChecked(gs, 2, nextPt);
+
+                    HotfixDNetWork.sNetwork_RequestTenRaffle_Res res = default(HotfixDNetWork.sNetwork_RequestTenRaffle_Res);
+                    res.nPoolid = nPoolid;
+                    res.nGroupid = nGroupid;
+                    res.nRaffle_Count_All = _raffleCountAll;
+                    res.nTopSignRaffleCount = _raffleTopSignCount;
+                    res.nGardenCoin = nextCoin;
+                    res.nGardenPoint = nextPt;
+                    CStreamWritter w = new CStreamWritter(24 + 40);
+                    w.Push((object)res);
+                    for (int i = 0; i < 10; i++)
+                    {
+                        HotfixDNetWork.sNetwork_GardenTradeDataV1 item = default(HotfixDNetWork.sNetwork_GardenTradeDataV1);
+                        item.nTrade_id = rewardIds[i];
+                        w.Push((object)item);
+                    }
+                    resStream = w.GetBuffer();
+                    bSucc = true;
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[ModBridge] TryHandleLocalCurrencyCmd ex: " + ex.Message);
+            }
         }
 
         private long ResolveDefaultBoxId(IGameSystem gs)
         {
-            CHomeStorageBox[] boxes = UnityEngine.Object.FindObjectsOfType<CHomeStorageBox>();
-            if (boxes != null)
-            {
-                for (int i = 0; i < boxes.Length; i++)
-                {
-                    if (boxes[i] != null && !boxes[i].RuntimeIsPreview && boxes[i].RuntimeInstanceId > 0)
-                        return boxes[i].RuntimeInstanceId;
-                }
-            }
+            if (gs == null) return 0;
             CHomeItemSystem his = gs.homeItemSystem as CHomeItemSystem;
-            if (his != null && his.m_dicData != null)
+            var homeData = GetHomeItemData(his);
+            if (homeData != null)
             {
-                foreach (Dictionary<long, HomeItemPlacementData> homeMap in his.m_dicData.Values)
+                foreach (Dictionary<long, HomeItemPlacementData> homeMap in homeData.Values)
                 {
                     if (homeMap == null) continue;
                     foreach (HomeItemPlacementData p in homeMap.Values)
                     {
-                        if (p != null && p.lInstanceId > 0 && IsStorageBoxHomeItem(p.nHomeItemId))
+                        if (IsStorageBoxPlacement(p))
                             return p.lInstanceId;
                     }
                 }
             }
             CHomeContainerSystem hcs = gs.homeContainerSystem as CHomeContainerSystem;
-            if (hcs != null && hcs.m_dicContainer != null)
+            var containers = GetHomeContainers(hcs);
+            if (containers != null)
             {
-                foreach (long k in hcs.m_dicContainer.Keys)
+                foreach (long k in containers.Keys)
                 {
                     if (k > 0) return k;
                 }
@@ -439,68 +2775,88 @@ namespace ModBridge
             return 0;
         }
 
-        private void MergeInfStackContainers(IGameSystem gs, int cid)
+        internal static bool MergeSingleHomeContainer(IGameSystem gs, CHomeContainer hc)
+        {
+            if (gs == null || hc == null || gs.materialSystem == null) return false;
+            int cnt = hc.GetSlotCount();
+            if (cnt <= 1) return false;
+
+            IRefitSystem refit = gs.refitSystem;
+            int[] seenIds = new int[cnt];
+            int[] seenEnds = new int[cnt];
+            CMaterial[] seenMats = new CMaterial[cnt];
+            int seenCount = 0;
+            ulong[] toRemove = new ulong[cnt];
+            int remCount = 0;
+
+            for (int i = 0; i < cnt; i++)
+            {
+                ulong uid = hc.GetMaterialUID(i);
+                CMaterial m = gs.materialSystem.GetMaterialByUID(uid);
+                if (m == null || m.nNumber <= 0) continue;
+
+                // Refitted weapons carry custom modifications - never stack with unmodified or other refitted items
+                if (refit != null && refit.IsRefit(uid)) continue;
+
+                int match = -1;
+                for (int j = 0; j < seenCount; j++)
+                {
+                    if (seenIds[j] == m.nConfigID && seenEnds[j] == m.nEndurance &&
+                        (long)seenMats[j].nNumber + (long)m.nNumber <= (long)int.MaxValue)
+                    {
+                        match = j;
+                        break;
+                    }
+                }
+                if (match >= 0)
+                {
+                    seenMats[match].SetNum(seenMats[match].nNumber + m.nNumber, false);
+                    toRemove[remCount++] = uid;
+                }
+                else
+                {
+                    seenIds[seenCount] = m.nConfigID;
+                    seenEnds[seenCount] = m.nEndurance;
+                    seenMats[seenCount] = m;
+                    seenCount++;
+                }
+            }
+
+            for (int i = 0; i < remCount; i++)
+            {
+                hc.RemoveMaterial(toRemove[i]);
+                gs.materialSystem.DestroyMaterial(toRemove[i], true);
+            }
+            return remCount > 0;
+        }
+
+        private void MergeInfStackContainers(IGameSystem gs, int cid, bool silentIfUnchanged)
         {
             if (gs == null || cid == 0) return;
             try
             {
                 // Infinite stacking strictly applies ONLY to warehouse containers (CHomeContainer).
                 // Player bag, drop, and sale containers retain vanilla rules (never auto-merged here).
+                bool anyMerged = false;
                 CHomeContainerSystem hcs = gs.homeContainerSystem as CHomeContainerSystem;
-                if (hcs != null && hcs.m_dicContainer != null && gs.materialSystem != null)
+                var containers = GetHomeContainers(hcs);
+                if (containers != null && gs.materialSystem != null)
                 {
-                    IRefitSystem refit = gs.refitSystem;
-                    foreach (KeyValuePair<long, CHomeContainer> kv in hcs.m_dicContainer)
+                    foreach (KeyValuePair<long, CHomeContainer> kv in containers)
                     {
-                        CHomeContainer hc = kv.Value;
-                        if (hc == null) continue;
-                        int cnt = hc.GetSlotCount();
-                        if (cnt <= 1) continue;
-                        int[] seenIds = new int[cnt];
-                        int[] seenEnds = new int[cnt];
-                        CMaterial[] seenMats = new CMaterial[cnt];
-                        int seenCount = 0;
-                        ulong[] toRemove = new ulong[cnt];
-                        int remCount = 0;
-                        for (int i = 0; i < cnt; i++)
-                        {
-                            ulong uid = hc.GetMaterialUID(i);
-                            CMaterial m = gs.materialSystem.GetMaterialByUID(uid);
-                            if (m == null || m.nNumber <= 0) continue;
-
-                            // Refitted weapons carry custom modifications - never stack with unmodified weapons
-                            if (refit != null && refit.IsRefit(uid)) continue;
-
-                            int match = -1;
-                            for (int j = 0; j < seenCount; j++)
-                            {
-                                if (seenIds[j] == m.nConfigID && seenEnds[j] == m.nEndurance)
-                                {
-                                    match = j;
-                                    break;
-                                }
-                            }
-                            if (match >= 0)
-                            {
-                                seenMats[match].SetNum(seenMats[match].nNumber + m.nNumber, false);
-                                toRemove[remCount++] = uid;
-                            }
-                            else
-                            {
-                                seenIds[seenCount] = m.nConfigID;
-                                seenEnds[seenCount] = m.nEndurance;
-                                seenMats[seenCount] = m;
-                                seenCount++;
-                            }
-                        }
-                        for (int i = 0; i < remCount; i++)
-                        {
-                            hc.RemoveMaterial(toRemove[i]);
-                            gs.materialSystem.DestroyMaterial(toRemove[i], true);
-                        }
+                        if (MergeSingleHomeContainer(gs, kv.Value))
+                            anyMerged = true;
                     }
                 }
-                SetStatus(1, "Merged warehouse into infinite stacks");
+                if (anyMerged)
+                {
+                    RefreshOpenStorageBoxUi();
+                    ExportDynWarehouse(gs);
+                }
+                if (!silentIfUnchanged || anyMerged)
+                {
+                    SetStatus(1, "Merged warehouse into infinite stacks");
+                }
             }
             catch (Exception ex)
             {
@@ -538,7 +2894,13 @@ namespace ModBridge
                 {
                     if ((mask & (1u << bit)) == 0u) continue;
                     eContainerTypeEnum et = (eContainerTypeEnum)bit;
-                    try { cs.RefreshContainer(cid, et); } catch { }
+                    try
+                    {
+                        IGameSystem gsCur = CGameSystem.Instance;
+                        if (gsCur != null && gsCur.containerSystem != null) gsCur.containerSystem.RefreshContainer(cid, et);
+                        else cs.RefreshContainer(cid, et);
+                    }
+                    catch { }
                     try
                     {
                         if (CClientGlobal.Instance != null && CClientGlobal.Instance.GetEventSystem != null)
@@ -557,6 +2919,9 @@ namespace ModBridge
             {
                 int lastId = _dirtyLastItemId;
                 _dirtyHomeBox = false;
+                s_whForceDirty = true;
+                RefreshOpenStorageBoxUi();
+                ExportDynWarehouseAll(CGameSystem.Instance, true);
                 try
                 {
                     if (CClientGlobal.Instance != null && CClientGlobal.Instance.GetEventSystem != null)
@@ -588,7 +2953,11 @@ namespace ModBridge
                 return -5;
             }
 
-            bool allowMerge = (!cfg.bCannotCombine && cfg.nEndurance == 0) || ((EditorPrefsX.endianDiff1 & 32) != 0);
+            eContainerTypeEnum destType = ResolveBagDestType(cfg.eType);
+            bool infBagNow = (target == 0 && destType == eContainerTypeEnum.Bag &&
+                              (EditorPrefsX.endianDiff1 & 32) != 0 && IsInShelterNow(gs));
+            bool allowMerge = (!cfg.bCannotCombine && cfg.nEndurance == 0) ||
+                              ((EditorPrefsX.endianDiff1 & 32) != 0 && (target == 1 || infBagNow));
 
             if (target == 1)
             {
@@ -608,10 +2977,11 @@ namespace ModBridge
                 if (hc == null)
                 {
                     CHomeContainerSystem hcsImpl = hcs as CHomeContainerSystem;
-                    if (hcsImpl != null && hcsImpl.m_dicContainer != null)
+                    var dicC = GetHomeContainers(hcsImpl);
+                    if (dicC != null)
                     {
                         hc = new CHomeContainer(chosenId);
-                        hcsImpl.m_dicContainer[chosenId] = hc;
+                        dicC[chosenId] = hc;
                     }
                 }
                 if (hc == null)
@@ -622,13 +2992,15 @@ namespace ModBridge
 
                 if (allowMerge)
                 {
+                    IRefitSystem refit = gs.refitSystem;
                     CMaterial merge = null;
                     int slotCnt = hc.GetSlotCount();
                     for (int i = 0; i < slotCnt; i++)
                     {
                         ulong uid = hc.GetMaterialUID(i);
                         CMaterial cand = gs.materialSystem.GetMaterialByUID(uid);
-                        if (cand != null && cand.pConfig != null && cand.nConfigID == itemId)
+                        if (cand != null && cand.pConfig != null && cand.nConfigID == itemId &&
+                            cand.nEndurance == cfg.nEndurance && (refit == null || !refit.IsRefit(uid)))
                         {
                             merge = cand;
                             break;
@@ -669,16 +3041,16 @@ namespace ModBridge
             }
 
             // Bag / Blueprint / Map / EXP / Wallet: insert directly to avoid blocking modal tips and per-item O(N^2) refreshes
-            eContainerTypeEnum destType = ResolveBagDestType(cfg.eType);
             CContainerSystem cs = gs.containerSystem as CContainerSystem;
-            if (cs != null && cs.m_dicData != null)
+            var dicData = GetContainerData(cs);
+            if (dicData != null)
             {
                 sContainerSystemData sdata = null;
-                if (!cs.m_dicData.TryGetValue(cid, out sdata) || sdata == null)
+                if (!dicData.TryGetValue(cid, out sdata) || sdata == null)
                 {
                     sdata = new sContainerSystemData();
                     sdata.nCustomID = cid;
-                    cs.m_dicData[cid] = sdata;
+                    dicData[cid] = sdata;
                 }
                 CContainer cont = null;
                 if (!sdata.dicContainer.TryGetValue(destType, out cont) || cont == null)
@@ -690,14 +3062,16 @@ namespace ModBridge
 
                 if (allowMerge)
                 {
+                    IRefitSystem refit = gs.refitSystem;
                     CMaterial merge = null;
-                    List<ulong> uids = cont.GetMaterialList();
+                    List<ulong> uids = GetContainerUidsDirect(cont);
                     if (uids != null)
                     {
                         for (int i = 0; i < uids.Count; i++)
                         {
+                            if (refit != null && refit.IsRefit(uids[i])) continue;
                             CMaterial cand = gs.materialSystem.GetMaterialByUID(uids[i]);
-                            if (cand != null && cand.nConfigID == itemId)
+                            if (cand != null && cand.nConfigID == itemId && cand.nEndurance == cfg.nEndurance)
                             {
                                 merge = cand;
                                 break;
@@ -735,6 +3109,7 @@ namespace ModBridge
                 _dirtyContainerSys = cs;
                 _dirtyBagMask |= (1u << ((int)destType & 15));
                 _dirtyLastItemId = itemId;
+                s_whForceDirty = true;
                 SetStatus(1, "Added to Bag: " + itemId.ToString() + " x" + num.ToString());
                 return 1;
             }
@@ -974,14 +3349,15 @@ namespace ModBridge
 
             CContainerSystem cs = gs.containerSystem as CContainerSystem;
             CContainer bpCont = null;
-            if (cs != null && cs.m_dicData != null)
+            var dicData = GetContainerData(cs);
+            if (dicData != null)
             {
                 sContainerSystemData sdata = null;
-                if (!cs.m_dicData.TryGetValue(cid, out sdata) || sdata == null)
+                if (!dicData.TryGetValue(cid, out sdata) || sdata == null)
                 {
                     sdata = new sContainerSystemData();
                     sdata.nCustomID = cid;
-                    cs.m_dicData[cid] = sdata;
+                    dicData[cid] = sdata;
                 }
                 if (!sdata.dicContainer.TryGetValue(eContainerTypeEnum.Blueprint, out bpCont) || bpCont == null)
                 {
@@ -1065,7 +3441,7 @@ namespace ModBridge
             {
                 ok = player.buffPart.AddBuff(buffId, player);
                 CBuff cb = player.buffPart.GetBuff(buffId);
-                if (cb != null) cb.m_nCurCycle = -999999;
+                if (cb != null) SetBuffCurCycle(cb, -999999);
             }
             if (lanPlayer != null && lanPlayer.buffPart != null)
             {
@@ -1126,7 +3502,7 @@ namespace ModBridge
                     }
                     if (cb != null)
                     {
-                        cb.m_nCurCycle = -999999;
+                        SetBuffCurCycle(cb, -999999);
                     }
                 }
                 else // Timed buff
@@ -1147,7 +3523,7 @@ namespace ModBridge
                     }
                     else
                     {
-                        cb.m_nCurCycle = -999999;
+                        SetBuffCurCycle(cb, -999999);
                     }
                 }
             }
@@ -1196,8 +3572,16 @@ namespace ModBridge
 
         private int CmdRestoreEndurance(IGameSystem gs, int cid)
         {
+            return RestoreEndurance(gs, cid, true, true);
+        }
+
+        private int RestoreEndurance(IGameSystem gs, int cid, bool includeBag, bool updateStatus)
+        {
+            if (gs == null || gs.containerSystem == null || gs.materialSystem == null) return 0;
             int n = 0;
-            eContainerTypeEnum[] containers = new eContainerTypeEnum[] { eContainerTypeEnum.Equipment, eContainerTypeEnum.Bag };
+            eContainerTypeEnum[] containers = includeBag
+                ? new eContainerTypeEnum[] { eContainerTypeEnum.Equipment, eContainerTypeEnum.Bag }
+                : new eContainerTypeEnum[] { eContainerTypeEnum.Equipment };
             for (int c = 0; c < containers.Length; c++)
             {
                 List<ulong> list = gs.containerSystem.GetContainerMaterialList(cid, containers[c]);
@@ -1212,7 +3596,10 @@ namespace ModBridge
                     }
                 }
             }
-            SetStatus(1, "Restored endurance x" + n.ToString());
+            if (updateStatus)
+            {
+                SetStatus(1, "Restored endurance x" + n.ToString());
+            }
             return 1;
         }
 
@@ -1250,7 +3637,7 @@ namespace ModBridge
                 *(byte*)(row + 0x10) = lkd;
             }
 
-            // Home storage boxes (scene + placed HomeItemSystem + active HomeContainerSystem)
+            // Home storage boxes (placed HomeItemSystem + active HomeContainerSystem)
             int boxCnt = 0;
             try
             {
@@ -1259,39 +3646,17 @@ namespace ModBridge
                 byte* bbase = b + 0x950;
                 long[] seenIds = new long[16];
 
-                CHomeStorageBox[] boxes = UnityEngine.Object.FindObjectsOfType<CHomeStorageBox>();
-                if (boxes != null)
-                {
-                    for (int i = 0; i < boxes.Length && boxCnt < 16; i++)
-                    {
-                        if (boxes[i] == null || boxes[i].RuntimeIsPreview) continue;
-                        long iid = boxes[i].RuntimeInstanceId;
-                        if (iid <= 0) continue;
-                        int used = 0;
-                        if (hcs != null)
-                        {
-                            CHomeContainer hc = hcs.TryGetContainer(iid);
-                            if (hc != null) used = hc.GetSlotCount();
-                        }
-                        byte* brow = bbase + boxCnt * 16;
-                        *(long*)(brow + 0x00) = iid;
-                        *(int*)(brow + 0x08) = boxes[i].Capacity;
-                        *(int*)(brow + 0x0C) = used;
-                        seenIds[boxCnt] = iid;
-                        boxCnt++;
-                    }
-                }
-
                 CHomeItemSystem his = (gs != null) ? (gs.homeItemSystem as CHomeItemSystem) : null;
-                if (his != null && his.m_dicData != null && boxCnt < 16)
+                var homeData = GetHomeItemData(his);
+                if (homeData != null)
                 {
-                    foreach (Dictionary<long, HomeItemPlacementData> homeMap in his.m_dicData.Values)
+                    foreach (Dictionary<long, HomeItemPlacementData> homeMap in homeData.Values)
                     {
                         if (homeMap == null) continue;
                         foreach (HomeItemPlacementData p in homeMap.Values)
                         {
                             if (boxCnt >= 16) break;
-                            if (p == null || p.lInstanceId <= 0 || !IsStorageBoxHomeItem(p.nHomeItemId)) continue;
+                            if (!IsStorageBoxPlacement(p)) continue;
                             bool dup = false;
                             for (int j = 0; j < boxCnt; j++) if (seenIds[j] == p.lInstanceId) { dup = true; break; }
                             if (dup) continue;
@@ -1303,7 +3668,7 @@ namespace ModBridge
                             }
                             byte* brow = bbase + boxCnt * 16;
                             *(long*)(brow + 0x00) = p.lInstanceId;
-                            *(int*)(brow + 0x08) = 12;
+                            *(int*)(brow + 0x08) = 50;
                             *(int*)(brow + 0x0C) = used;
                             seenIds[boxCnt] = p.lInstanceId;
                             boxCnt++;
@@ -1312,9 +3677,10 @@ namespace ModBridge
                 }
 
                 CHomeContainerSystem hcsImpl = hcs as CHomeContainerSystem;
-                if (hcsImpl != null && hcsImpl.m_dicContainer != null && boxCnt < 16)
+                var containers = GetHomeContainers(hcsImpl);
+                if (containers != null && boxCnt < 16)
                 {
-                    foreach (KeyValuePair<long, CHomeContainer> kv in hcsImpl.m_dicContainer)
+                    foreach (KeyValuePair<long, CHomeContainer> kv in containers)
                     {
                         if (boxCnt >= 16) break;
                         long iid = kv.Key;
@@ -1325,14 +3691,17 @@ namespace ModBridge
                         int used = (kv.Value != null) ? kv.Value.GetSlotCount() : 0;
                         byte* brow = bbase + boxCnt * 16;
                         *(long*)(brow + 0x00) = iid;
-                        *(int*)(brow + 0x08) = 12;
+                        *(int*)(brow + 0x08) = 50;
                         *(int*)(brow + 0x0C) = used;
                         seenIds[boxCnt] = iid;
                         boxCnt++;
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[ModBridge] UpdateSnapshot boxes ex: " + ex.Message);
+            }
             *(int*)(b + 0x948) = boxCnt;
 
             // Active custom buffs snapshot
@@ -1431,46 +3800,53 @@ namespace ModBridge
 
             if (!on) return;
 
-            // Single-player progress-bar tool operations (chopping trees, mining, dismantling furniture)
+            // Single-player: Complete ALL Operate behaviors instantly (gathering, looting, chests, tools, trees, mining, sawing)
             if (player != null)
             {
                 try
                 {
                     CMainCharacter mc = player.GetComponent(typeof(CMainCharacter)) as CMainCharacter;
-                    if (mc != null && mc.m_pCurState != null)
+                    if (mc != null && mc.GetStateID() == 4)
                     {
-                        CCharacterBehaviorBase beh = mc.m_pCurState.m_pBehavior;
-                        if (beh != null)
+                        CCharacterStateBase st = GetCurState(mc);
+                        if (st != null)
                         {
-                            if (beh is CMainCharacterBehavior_Operate_Tool)
+                            CCharacterBehaviorBase beh = GetBehavior(st);
+                            if (beh != null)
                             {
-                                if (s_toolDataFi == null)
+                                string bName = beh.GetType().Name;
+                                if (bName.Contains("Operate"))
                                 {
-                                    s_toolDataFi = typeof(CMainCharacterBehavior_Operate_Tool).GetField("m_pData", BindingFlags.Instance | BindingFlags.NonPublic);
-                                }
-                                if (s_toolDataFi != null)
-                                {
-                                    object dObj = s_toolDataFi.GetValue(beh);
-                                    if (dObj is sUIInputOperateData)
+                                    if (beh is CMainCharacterBehavior_Operate_Tool)
                                     {
-                                        sUIInputOperateData data = (sUIInputOperateData)dObj;
-                                        if (data.pTargetOperatePoint != null)
+                                        if (s_toolDataFi == null)
                                         {
-                                            data.pTargetOperatePoint.ReduceHP(999999);
-                                            if (data.onFinishCallback != null)
+                                            s_toolDataFi = typeof(CMainCharacterBehavior_Operate_Tool).GetField("m_pData", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                                        }
+                                        if (s_toolDataFi != null)
+                                        {
+                                            object dObj = s_toolDataFi.GetValue(beh);
+                                            if (dObj is sUIInputOperateData)
                                             {
-                                                data.onFinishCallback(data.pTargetOperatePoint, data.inputData);
+                                                sUIInputOperateData data = (sUIInputOperateData)dObj;
+                                                if (data.pTargetOperatePoint != null)
+                                                {
+                                                    data.pTargetOperatePoint.ReduceHP(999999);
+                                                    if (data.onFinishCallback != null)
+                                                    {
+                                                        data.onFinishCallback(data.pTargetOperatePoint, data.inputData);
+                                                    }
+                                                }
                                             }
-                                            MethodInfo miEnd = beh.GetType().GetMethod("End", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                                            if (miEnd != null) miEnd.Invoke(beh, null);
                                         }
                                     }
+
+                                    if (s_miSpBehEnd == null)
+                                    {
+                                        s_miSpBehEnd = typeof(CCharacterBehaviorBase).GetMethod("End", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                                    }
+                                    if (s_miSpBehEnd != null) s_miSpBehEnd.Invoke(beh, null);
                                 }
-                            }
-                            else if (beh is CMainCharacterBehavior_Operate_Famu || beh is CMainCharacterBehavior_Operate_Caikuang)
-                            {
-                                MethodInfo miEnd = beh.GetType().GetMethod("End", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                                if (miEnd != null) miEnd.Invoke(beh, null);
                             }
                         }
                     }
@@ -1486,20 +3862,23 @@ namespace ModBridge
                     LAN.CLanMainCharacter lmc = lanPlayer.GetComponent(typeof(LAN.CLanMainCharacter)) as LAN.CLanMainCharacter;
                     if (lmc != null && lmc.GetStateID() == 4) // State 4 is Operate
                     {
-                        FieldInfo fCur = typeof(LAN.CLanCharacterBase).GetField("m_pCurState", BindingFlags.Instance | BindingFlags.NonPublic);
-                        if (fCur != null)
+                        if (s_fiLanCurState == null)
                         {
-                            object curSt = fCur.GetValue(lmc);
+                            s_fiLanCurState = typeof(LAN.CLanCharacterBase).GetField("m_pCurState", BindingFlags.Instance | BindingFlags.NonPublic);
+                        }
+                        if (s_fiLanCurState != null)
+                        {
+                            object curSt = s_fiLanCurState.GetValue(lmc);
                             if (curSt != null)
                             {
-                                FieldInfo fBeh = curSt.GetType().GetField("m_pBehavior", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                                if (fBeh != null)
+                                RangedBehMeta stMeta = GetTypeMeta(curSt.GetType());
+                                if (stMeta.fBehavior != null)
                                 {
-                                    object lbeh = fBeh.GetValue(curSt);
+                                    object lbeh = stMeta.fBehavior.GetValue(curSt);
                                     if (lbeh != null)
                                     {
-                                        MethodInfo miEnd = lbeh.GetType().GetMethod("End", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                                        if (miEnd != null) miEnd.Invoke(lbeh, null);
+                                        RangedBehMeta behMeta = GetTypeMeta(lbeh.GetType());
+                                        if (behMeta.miEnd != null) behMeta.miEnd.Invoke(lbeh, null);
                                     }
                                 }
                             }
@@ -1523,18 +3902,23 @@ namespace ModBridge
             CDLCSystem dlc = gs.dLCSystem as CDLCSystem;
             if (ps == null) return -2;
 
+            List<int> listPkg = GetPayListPackage(ps);
+            List<int> listDiamond = GetPayDiamondPackage(ps);
+            List<int> listLimit = GetPayLimitGift(ps);
+            Dictionary<int, int> dlcMap = GetDlcInstall(dlc);
+
             if (!_paidApplied)
             {
-                _origPkg = (ps.m_listPackage != null) ? ps.m_listPackage.ToArray() : new int[0];
-                _origDiamond = (ps.m_listDiamondPackage != null) ? ps.m_listDiamondPackage.ToArray() : new int[0];
-                _origLimit = (ps.m_listLimitGift != null) ? ps.m_listLimitGift.ToArray() : new int[0];
-                if (dlc != null && dlc.m_dicDLCInstallDictionary != null)
+                _origPkg = (listPkg != null) ? listPkg.ToArray() : new int[0];
+                _origDiamond = (listDiamond != null) ? listDiamond.ToArray() : new int[0];
+                _origLimit = (listLimit != null) ? listLimit.ToArray() : new int[0];
+                if (dlcMap != null)
                 {
-                    int c = dlc.m_dicDLCInstallDictionary.Count;
+                    int c = dlcMap.Count;
                     _origDlcKeys = new int[c];
                     _origDlcVals = new int[c];
                     int k = 0;
-                    foreach (KeyValuePair<int, int> kv in dlc.m_dicDLCInstallDictionary)
+                    foreach (KeyValuePair<int, int> kv in dlcMap)
                     {
                         _origDlcKeys[k] = kv.Key;
                         _origDlcVals[k] = kv.Value;
@@ -1544,29 +3928,25 @@ namespace ModBridge
                 _paidApplied = true;
             }
 
-            if (ps.m_listPackage == null) ps.m_listPackage = new List<int>();
-            if (ps.m_listDiamondPackage == null) ps.m_listDiamondPackage = new List<int>();
-            if (ps.m_listLimitGift == null) ps.m_listLimitGift = new List<int>();
-
-            int beforeCount = ps.m_listPackage.Count + ps.m_listLimitGift.Count + ((dlc != null && dlc.m_dicDLCInstallDictionary != null) ? dlc.m_dicDLCInstallDictionary.Count : 0);
+            int beforeCount = (listPkg != null ? listPkg.Count : 0) + (listLimit != null ? listLimit.Count : 0) + (dlcMap != null ? dlcMap.Count : 0);
 
             // Baseline IDs: Shop 11..35, Bundles 101..115, Story DLCs 201..220, Holiday/Bundles 200..310
             for (int id = 1; id <= 40; id++)
             {
-                AddUnique(ps.m_listPackage, id);
-                AddUnique(ps.m_listDiamondPackage, id);
-                AddUnique(ps.m_listLimitGift, id);
+                AddUnique(listPkg, id);
+                AddUnique(listDiamond, id);
+                AddUnique(listLimit, id);
             }
             for (int id = 100; id <= 115; id++)
             {
-                AddUnique(ps.m_listPackage, id);
-                AddUnique(ps.m_listLimitGift, id);
+                AddUnique(listPkg, id);
+                AddUnique(listLimit, id);
             }
             for (int id = 200; id <= 310; id++)
             {
-                AddUnique(ps.m_listPackage, id);
-                AddUnique(ps.m_listLimitGift, id);
-                if (dlc != null && dlc.m_dicDLCInstallDictionary != null) dlc.m_dicDLCInstallDictionary[id] = 1;
+                AddUnique(listPkg, id);
+                AddUnique(listLimit, id);
+                if (dlcMap != null) dlcMap[id] = 1;
             }
 
             // Runtime config loaders for any future updates
@@ -1584,9 +3964,9 @@ namespace ModBridge
                             for (int i = 0; i < l.Count; i++)
                             {
                                 if (l[i] == null) continue;
-                                AddUnique(ps.m_listPackage, l[i].nId);
+                                AddUnique(listPkg, l[i].nId);
                                 if (l[i].listBindID != null)
-                                    for (int j = 0; j < l[i].listBindID.Count; j++) AddUnique(ps.m_listPackage, l[i].listBindID[j]);
+                                    for (int j = 0; j < l[i].listBindID.Count; j++) AddUnique(listPkg, l[i].listBindID[j]);
                             }
                         }
                     }
@@ -1599,13 +3979,13 @@ namespace ModBridge
                             for (int i = 0; i < l.Count; i++)
                             {
                                 if (l[i] == null) continue;
-                                AddUnique(ps.m_listLimitGift, l[i].nId);
-                                AddUnique(ps.m_listPackage, l[i].nId);
+                                AddUnique(listLimit, l[i].nId);
+                                AddUnique(listPkg, l[i].nId);
                                 if (l[i].listBindID != null)
                                     for (int j = 0; j < l[i].listBindID.Count; j++)
                                     {
-                                        AddUnique(ps.m_listPackage, l[i].listBindID[j]);
-                                        AddUnique(ps.m_listLimitGift, l[i].listBindID[j]);
+                                        AddUnique(listPkg, l[i].listBindID[j]);
+                                        AddUnique(listLimit, l[i].listBindID[j]);
                                     }
                             }
                         }
@@ -1616,7 +3996,7 @@ namespace ModBridge
                         List<sPayDiamondConfig> l = pDia.GetAllConfig();
                         if (l != null)
                             for (int i = 0; i < l.Count; i++)
-                                if (l[i] != null) { AddUnique(ps.m_listDiamondPackage, l[i].nId); AddUnique(ps.m_listPackage, l[i].nId); }
+                                if (l[i] != null) { AddUnique(listDiamond, l[i].nId); AddUnique(listPkg, l[i].nId); }
                     }
                     CPayDLCConfigLoader pDlc = dc.GetConfigLoader(eGameConfigType.PayDLC) as CPayDLCConfigLoader;
                     if (pDlc != null)
@@ -1626,8 +4006,8 @@ namespace ModBridge
                             for (int i = 0; i < l.Count; i++)
                                 if (l[i] != null)
                                 {
-                                    AddUnique(ps.m_listPackage, l[i].nId);
-                                    if (dlc != null && dlc.m_dicDLCInstallDictionary != null) dlc.m_dicDLCInstallDictionary[l[i].nId] = 1;
+                                    AddUnique(listPkg, l[i].nId);
+                                    if (dlcMap != null) dlcMap[l[i].nId] = 1;
                                 }
                     }
                     CSceneConfigLoader pScene = dc.GetConfigLoader(eGameConfigType.Scene) as CSceneConfigLoader;
@@ -1641,7 +4021,7 @@ namespace ModBridge
                             {
                                 if (l[i] != null && l[i].nDependentShop > 0)
                                 {
-                                    AddUnique(ps.m_listPackage, l[i].nDependentShop);
+                                    AddUnique(listPkg, l[i].nDependentShop);
                                     if (ss != null)
                                     {
                                         CScene sc = ss.GetScene(l[i].nID);
@@ -1652,11 +4032,11 @@ namespace ModBridge
                         }
                     }
                     CHolidayImportantExchangeConfigLoader pHol = dc.GetConfigLoader(eGameConfigType.HolidayImportantExchange) as CHolidayImportantExchangeConfigLoader;
-                    if (pHol != null && pHol.m_dicConfig != null)
+                    var holConf = GetHolidayConfig(pHol); if (holConf != null)
                     {
-                        foreach (int hk in pHol.m_dicConfig.Keys)
+                        foreach (int hk in holConf.Keys)
                         {
-                            AddUnique(ps.m_listPackage, hk);
+                            AddUnique(listPkg, hk);
                         }
                     }
                 }
@@ -1674,7 +4054,7 @@ namespace ModBridge
             }
             catch { }
 
-            int afterCount = ps.m_listPackage.Count + ps.m_listLimitGift.Count + ((dlc != null && dlc.m_dicDLCInstallDictionary != null) ? dlc.m_dicDLCInstallDictionary.Count : 0);
+            int afterCount = (listPkg != null ? listPkg.Count : 0) + (listLimit != null ? listLimit.Count : 0) + (dlcMap != null ? dlcMap.Count : 0);
             if (afterCount != beforeCount)
             {
                 try
@@ -1690,7 +4070,7 @@ namespace ModBridge
                 catch { }
             }
 
-            SetStatus(1, "Paid unlock active (" + ps.m_listPackage.Count.ToString() + " pkgs)");
+            SetStatus(1, "Paid unlock active (" + (listPkg != null ? listPkg.Count : 0).ToString() + " pkgs)");
             return 1;
         }
 
@@ -1701,26 +4081,30 @@ namespace ModBridge
             CDLCSystem dlc = gs.dLCSystem as CDLCSystem;
             if (ps != null)
             {
-                if (ps.m_listPackage != null && _origPkg != null)
+                List<int> listPkg = GetPayListPackage(ps);
+                if (listPkg != null && _origPkg != null)
                 {
-                    ps.m_listPackage.Clear();
-                    for (int i = 0; i < _origPkg.Length; i++) ps.m_listPackage.Add(_origPkg[i]);
+                    listPkg.Clear();
+                    for (int i = 0; i < _origPkg.Length; i++) listPkg.Add(_origPkg[i]);
                 }
-                if (ps.m_listDiamondPackage != null && _origDiamond != null)
+                List<int> listDiamond = GetPayDiamondPackage(ps);
+                if (listDiamond != null && _origDiamond != null)
                 {
-                    ps.m_listDiamondPackage.Clear();
-                    for (int i = 0; i < _origDiamond.Length; i++) ps.m_listDiamondPackage.Add(_origDiamond[i]);
+                    listDiamond.Clear();
+                    for (int i = 0; i < _origDiamond.Length; i++) listDiamond.Add(_origDiamond[i]);
                 }
-                if (ps.m_listLimitGift != null && _origLimit != null)
+                List<int> listLimit = GetPayLimitGift(ps);
+                if (listLimit != null && _origLimit != null)
                 {
-                    ps.m_listLimitGift.Clear();
-                    for (int i = 0; i < _origLimit.Length; i++) ps.m_listLimitGift.Add(_origLimit[i]);
+                    listLimit.Clear();
+                    for (int i = 0; i < _origLimit.Length; i++) listLimit.Add(_origLimit[i]);
                 }
             }
-            if (dlc != null && dlc.m_dicDLCInstallDictionary != null && _origDlcKeys != null)
+            Dictionary<int, int> dlcMap = GetDlcInstall(dlc);
+            if (dlcMap != null && _origDlcKeys != null)
             {
-                dlc.m_dicDLCInstallDictionary.Clear();
-                for (int i = 0; i < _origDlcKeys.Length; i++) dlc.m_dicDLCInstallDictionary[_origDlcKeys[i]] = _origDlcVals[i];
+                dlcMap.Clear();
+                for (int i = 0; i < _origDlcKeys.Length; i++) dlcMap[_origDlcKeys[i]] = _origDlcVals[i];
             }
             _paidApplied = false;
             try
@@ -1801,40 +4185,67 @@ namespace ModBridge
             }
         }
 
+        private bool IsAnyJoystickCancelling()
+        {
+            try
+            {
+                bool needRescan = (_cachedJoysticks == null) || ((_tick - _lastJoystickScanTick) >= 180u);
+                if (!needRescan)
+                {
+                    for (int i = 0; i < _cachedJoysticks.Length; i++)
+                    {
+                        if (_cachedJoysticks[i] == null) { needRescan = true; break; }
+                    }
+                }
+                if (needRescan)
+                {
+                    _lastJoystickScanTick = _tick;
+                    UnityEngine.Object[] raw = UnityEngine.Object.FindObjectsOfType(typeof(CUIJoystick));
+                    if (raw != null && raw.Length > 0)
+                    {
+                        _cachedJoysticks = new CUIJoystick[raw.Length];
+                        for (int i = 0; i < raw.Length; i++) _cachedJoysticks[i] = raw[i] as CUIJoystick;
+                    }
+                    else
+                    {
+                        _cachedJoysticks = null;
+                    }
+                }
+                if (_cachedJoysticks != null)
+                {
+                    for (int i = 0; i < _cachedJoysticks.Length; i++)
+                    {
+                        CUIJoystick j = _cachedJoysticks[i];
+                        if (j != null && IsJoystickCancelling(j)) return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
         private void MaintainMachineGun(CEntity player, uint mgRateX10)
         {
             CMainCharacter mc = player.GetComponent(typeof(CMainCharacter)) as CMainCharacter;
-            if (mc == null || !mc.m_bInputAttack) return;
-            CCharacterStateBase st = mc.m_pCurState;
+            if (mc == null || !GetInputAttack(mc)) return;
+            CCharacterStateBase st = GetCurState(mc);
             if (st == null || st.GetStateEnum() != 3) return;
             int bid = st.GetBehaviorID();
             if (!IsRangedBehaviorId(bid)) return;
 
             // Pause firing if player dragged attack joystick into cancel area
-            try
-            {
-                UnityEngine.Object[] sticks = UnityEngine.Object.FindObjectsOfType(typeof(CUIJoystick));
-                if (sticks != null)
-                {
-                    for (int i = 0; i < sticks.Length; i++)
-                    {
-                        CUIJoystick j = sticks[i] as CUIJoystick;
-                        if (j != null && j.m_bPointerDown && j.m_bEnterCancel) return;
-                    }
-                }
-            }
-            catch { }
+            if (IsAnyJoystickCancelling()) return;
 
             float now = Time.realtimeSinceStartup;
             if (now < _nextMgFireTime) return;
             float interval = 10f / (float)mgRateX10;
             _nextMgFireTime = now + interval;
 
-            CCharacterBehaviorBase beh = st.m_pBehavior;
+            CCharacterBehaviorBase beh = GetBehavior(st);
             if (beh == null) return;
             try
             {
-                FireRangedBehavior(beh);
+                FireRangedBehaviorGeneric(beh);
             }
             catch (Exception ex)
             {
@@ -1842,43 +4253,18 @@ namespace ModBridge
             }
         }
 
+        private static void FireRangedBehaviorGeneric(object beh)
+        {
+            if (beh == null) return;
+            RangedBehMeta meta = GetTypeMeta(beh.GetType());
+            if (meta.fCharge != null) meta.fCharge.SetValue(beh, 1f);
+            if (meta.fAttackDo != null) meta.fAttackDo.SetValue(beh, false);
+            if (meta.miAttack != null) meta.miAttack.Invoke(beh, null);
+        }
+
         private static void FireRangedBehavior(CCharacterBehaviorBase beh)
         {
-            CMainCharacterBehavior_Attack_Yuancheng b4 = beh as CMainCharacterBehavior_Attack_Yuancheng;
-            if (b4 != null) { b4.m_bAttackDo = false; b4.fChargePercent = 1f; b4.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_YuanchengLianFa b9 = beh as CMainCharacterBehavior_Attack_YuanchengLianFa;
-            if (b9 != null) { b9.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_YuanchengMulti b14 = beh as CMainCharacterBehavior_Attack_YuanchengMulti;
-            if (b14 != null) { b14.m_bAttackDo = false; b14.fChargePercent = 1f; b14.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_Yuancheng_Free b19 = beh as CMainCharacterBehavior_Attack_Yuancheng_Free;
-            if (b19 != null) { b19.m_bAttackDo = false; b19.fChargePercent = 1f; b19.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_YuanchengMulti_Free b20 = beh as CMainCharacterBehavior_Attack_YuanchengMulti_Free;
-            if (b20 != null) { b20.m_bAttackDo = false; b20.fChargePercent = 1f; b20.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_DuJiaoShou b25 = beh as CMainCharacterBehavior_Attack_DuJiaoShou;
-            if (b25 != null) { b25.m_bAttackDo = false; b25.fChargePercent = 1f; b25.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_Yuancheng_LongYan b26 = beh as CMainCharacterBehavior_Attack_Yuancheng_LongYan;
-            if (b26 != null) { b26.m_bAttackDo = false; b26.fChargePercent = 1f; b26.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_GuLingJingGuai b27 = beh as CMainCharacterBehavior_Attack_GuLingJingGuai;
-            if (b27 != null) { b27.m_bAttackDo = false; b27.fChargePercent = 1f; b27.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_YuMao b28 = beh as CMainCharacterBehavior_Attack_YuMao;
-            if (b28 != null) { b28.m_bAttackDo = false; b28.fChargePercent = 1f; b28.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_DuanChangDi b29 = beh as CMainCharacterBehavior_Attack_DuanChangDi;
-            if (b29 != null) { b29.m_bAttackDo = false; b29.fChargePercent = 1f; b29.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_JiHan b30 = beh as CMainCharacterBehavior_Attack_JiHan;
-            if (b30 != null) { b30.m_bAttackDo = false; b30.fChargePercent = 1f; b30.Attack(); return; }
-
-            CMainCharacterBehavior_Attack_FeiBiao b18 = beh as CMainCharacterBehavior_Attack_FeiBiao;
-            if (b18 != null) { b18.m_bAttackDo = false; b18.fChargePercent = 1f; b18.Attack(); return; }
+            FireRangedBehaviorGeneric(beh);
         }
 
         private void MaintainMachineGunLAN(LAN.CLanEntity lanPlayer, uint mgRateX10)
@@ -1887,36 +4273,27 @@ namespace ModBridge
             if (mc == null) return;
             if (mc.GetStateID() != 3) return; // State 3 is Attack
 
-            try
-            {
-                UnityEngine.Object[] sticks = UnityEngine.Object.FindObjectsOfType(typeof(CUIJoystick));
-                if (sticks != null)
-                {
-                    for (int i = 0; i < sticks.Length; i++)
-                    {
-                        CUIJoystick j = sticks[i] as CUIJoystick;
-                        if (j != null && j.m_bPointerDown && j.m_bEnterCancel) return;
-                    }
-                }
-            }
-            catch { }
+            if (IsAnyJoystickCancelling()) return;
 
             float now = Time.realtimeSinceStartup;
             if (now < _nextMgFireTime) return;
             float interval = 10f / (float)mgRateX10;
             _nextMgFireTime = now + interval;
 
-            FieldInfo fCur = typeof(LAN.CLanCharacterBase).GetField("m_pCurState", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (fCur == null) return;
-            object st = fCur.GetValue(mc);
+            if (s_fiLanCurState == null)
+            {
+                s_fiLanCurState = typeof(LAN.CLanCharacterBase).GetField("m_pCurState", BindingFlags.Instance | BindingFlags.NonPublic);
+            }
+            if (s_fiLanCurState == null) return;
+            object st = s_fiLanCurState.GetValue(mc);
             if (st == null) return;
-            FieldInfo fBeh = st.GetType().GetField("m_pBehavior", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-            if (fBeh == null) return;
-            LAN.CLanCharacterBehaviorBase beh = fBeh.GetValue(st) as LAN.CLanCharacterBehaviorBase;
+            RangedBehMeta stMeta = GetTypeMeta(st.GetType());
+            if (stMeta.fBehavior == null) return;
+            LAN.CLanCharacterBehaviorBase beh = stMeta.fBehavior.GetValue(st) as LAN.CLanCharacterBehaviorBase;
             if (beh == null) return;
             try
             {
-                FireRangedBehaviorLAN(beh);
+                FireRangedBehaviorGeneric(beh);
             }
             catch (Exception ex)
             {
@@ -1926,17 +4303,7 @@ namespace ModBridge
 
         private static void FireRangedBehaviorLAN(LAN.CLanCharacterBehaviorBase beh)
         {
-            Type t = beh.GetType();
-            FieldInfo fCharge = t.GetField("fChargePercent", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-            if (fCharge != null) fCharge.SetValue(beh, 1f);
-            FieldInfo fAttackDo = t.GetField("m_bAttackDo", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-            if (fAttackDo != null) fAttackDo.SetValue(beh, false);
-
-            MethodInfo mi = t.GetMethod("Attack", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (mi != null)
-            {
-                mi.Invoke(beh, null);
-            }
+            FireRangedBehaviorGeneric(beh);
         }
 
         // ==================== #4 Dynamic Item / Buff / Icon Exporter ====================
@@ -2146,10 +4513,12 @@ namespace ModBridge
             }
         }
 
+        private static readonly UTF8Encoding s_utf8NoBom = new UTF8Encoding(false);
+
         private static void WriteAtomicText(string dst, string text)
         {
             string tmp = dst + ".tmp";
-            File.WriteAllText(tmp, text, Encoding.UTF8);
+            File.WriteAllText(tmp, text, s_utf8NoBom);
             if (File.Exists(dst)) File.Delete(dst);
             File.Move(tmp, dst);
         }
@@ -2354,6 +4723,10 @@ namespace ModBridge
                 actualDel = mat.nNumber;
                 hc.RemoveMaterial(matUID);
                 gs.materialSystem.DestroyMaterial(matUID, true);
+                if (hc.IsEmpty())
+                {
+                    hcs.RemoveContainerIfEmpty(boxId);
+                }
             }
             else
             {
@@ -2361,16 +4734,7 @@ namespace ModBridge
                 mat.SetNum(mat.nNumber - delCount, true);
             }
 
-            try
-            {
-                CUIBase boxUI = (CUIMgr.Instance != null) ? CUIMgr.Instance.GetWnd(CUIDefine.eUIWnd.UI_Game_Home_StorageBox) : null;
-                if (boxUI != null && boxUI.IsVisable())
-                {
-                    MethodInfo mi = boxUI.GetType().GetMethod("RefreshStorageBox", BindingFlags.Instance | BindingFlags.NonPublic);
-                    if (mi != null) mi.Invoke(boxUI, null);
-                }
-            }
-            catch { }
+            RefreshOpenStorageBoxUi();
 
             ExportDynWarehouse(gs);
             SetStatus(1, "Deleted " + actualDel.ToString() + "x " + matName);
@@ -2381,7 +4745,8 @@ namespace ModBridge
         {
             if (gs == null || gs.homeContainerSystem == null || gs.materialSystem == null) return;
             CHomeContainerSystem hcs = gs.homeContainerSystem as CHomeContainerSystem;
-            if (hcs == null || hcs.m_dicContainer == null) return;
+            var containers = GetHomeContainers(hcs);
+            if (containers == null) return;
             byte* b = Shm();
             if (b == null) return;
             string dir = ReadShmDynDir(b);
@@ -2392,7 +4757,7 @@ namespace ModBridge
                 StringBuilder sb = new StringBuilder(4096);
                 sb.Append('[');
                 bool first = true;
-                foreach (KeyValuePair<long, CHomeContainer> kv in hcs.m_dicContainer)
+                foreach (KeyValuePair<long, CHomeContainer> kv in containers)
                 {
                     long boxId = kv.Key;
                     CHomeContainer hc = kv.Value;
@@ -2462,6 +4827,7 @@ namespace ModBridge
         // ==================== #16 Sewer / Cave Full Brightness ====================
         private void MaintainSewerHighlight(bool on)
         {
+            if (!on && !_sewerHighlightApplied) return;
             try
             {
                 CDayAndNightSceneDisplay dnd = CDayAndNightSceneDisplay.Instance;
@@ -2470,15 +4836,19 @@ namespace ModBridge
                 {
                     dnd.m_pWorkingRoot.SetActive(!on);
                 }
-                FieldInfo fBg = typeof(CDayAndNightSceneDisplay).GetField("m_pImageBG", BindingFlags.Instance | BindingFlags.Public);
-                if (fBg != null)
+                if (s_fiDndImageBg == null)
                 {
-                    Component comp = fBg.GetValue(dnd) as Component;
+                    s_fiDndImageBg = typeof(CDayAndNightSceneDisplay).GetField("m_pImageBG", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                }
+                if (s_fiDndImageBg != null)
+                {
+                    Component comp = s_fiDndImageBg.GetValue(dnd) as Component;
                     if (comp != null && comp.gameObject.activeSelf == on)
                     {
                         comp.gameObject.SetActive(!on);
                     }
                 }
+                _sewerHighlightApplied = on;
             }
             catch { }
         }
@@ -2486,7 +4856,16 @@ namespace ModBridge
         // ==================== #17 Always Open Limited-Time Events ====================
         private void MaintainAlwaysEvents(bool on)
         {
-            if (!on) return;
+            if (!on)
+            {
+                _lastEventsCid = 0;
+                return;
+            }
+            bool toggleOn = (_prevFlags & 512u) == 0u;
+            bool cidChanged = (_lastCid != 0 && _lastEventsCid != _lastCid);
+            if (!toggleOn && !cidChanged && (_tick % 300u) != 0u) return;
+            _lastEventsCid = _lastCid;
+
             try
             {
                 CAccountMgr acc = CAccountMgr.Instance;
@@ -2518,18 +4897,19 @@ namespace ModBridge
                     CActivityOverviewConfigLoader actLoader = CClientGlobal.Instance.GetGameDataCenter.GetConfigLoader<CActivityOverviewConfigLoader>(eGameConfigType.ActivityOverview);
                     if (actLoader != null)
                     {
-                        FieldInfo fSorted = typeof(CActivityOverviewConfigLoader).GetField("m_listSorted", BindingFlags.Instance | BindingFlags.NonPublic);
-                        if (fSorted != null)
+                        if (s_fiActSorted == null)
+                            s_fiActSorted = typeof(CActivityOverviewConfigLoader).GetField("m_listSorted", BindingFlags.Instance | BindingFlags.NonPublic);
+                        if (s_fiActSorted != null)
                         {
-                            List<sActivityOverviewConfig> configs = fSorted.GetValue(actLoader) as List<sActivityOverviewConfig>;
+                            List<sActivityOverviewConfig> configs = s_fiActSorted.GetValue(actLoader) as List<sActivityOverviewConfig>;
                             if (configs != null)
                             {
-                                PropertyInfo pOpen = typeof(sActivityOverviewConfig).GetProperty("OpenDay");
-                                PropertyInfo pEnd = typeof(sActivityOverviewConfig).GetProperty("EndDay");
+                                if (s_piActOpen == null) s_piActOpen = typeof(sActivityOverviewConfig).GetProperty("OpenDay");
+                                if (s_piActEnd == null) s_piActEnd = typeof(sActivityOverviewConfig).GetProperty("EndDay");
                                 for (int i = 0; i < configs.Count; i++)
                                 {
-                                    if (pOpen != null && pOpen.CanWrite) pOpen.SetValue(configs[i], DateTime.MinValue, null);
-                                    if (pEnd != null && pEnd.CanWrite) pEnd.SetValue(configs[i], DateTime.MaxValue, null);
+                                    if (s_piActOpen != null && s_piActOpen.CanWrite) s_piActOpen.SetValue(configs[i], DateTime.MinValue, null);
+                                    if (s_piActEnd != null && s_piActEnd.CanWrite) s_piActEnd.SetValue(configs[i], DateTime.MaxValue, null);
                                 }
                             }
                         }
@@ -2542,34 +4922,71 @@ namespace ModBridge
         // ==================== #18 Phonograph Local MP3 Music ====================
         private void MaintainPhonograph(bool on)
         {
+            if (!on && _playingMp3Path == null && !_phInjected && (_prevFlags & 1024u) == 0u)
+                return;
+
             try
             {
-                CPhonograph ph = UnityEngine.Object.FindObjectOfType(typeof(CPhonograph)) as CPhonograph;
+                if (_cachedPh == null)
+                {
+                    bool toggleOn = (_prevFlags & 1024u) == 0u;
+                    if (!on)
+                    {
+                        StopLocalMusic();
+                        _phInjected = false;
+                        return;
+                    }
+                    if (!toggleOn && (_tick - _lastPhScanTick) < 180u)
+                        return;
+                    _lastPhScanTick = _tick;
+                    _cachedPh = UnityEngine.Object.FindObjectOfType(typeof(CPhonograph)) as CPhonograph;
+                    _cachedPhAnim = null;
+                }
+
+                CPhonograph ph = _cachedPh;
                 if (ph == null)
                 {
                     StopLocalMusic();
+                    _phInjected = false;
                     return;
                 }
 
                 if (on)
                 {
-                    if ((_tick % 180u) == 0u || ph.m_listMusic.Find(m => m.nMusicID >= 88000) == null)
+                    if (!_phInjected || (_tick % 300u) == 0u)
                     {
-                        InjectLocalMusic(ph);
+                        bool hasCustom = false;
+                        for (int i = 0; i < ph.m_listMusic.Count; i++)
+                        {
+                            if (ph.m_listMusic[i].nMusicID >= 88000) { hasCustom = true; break; }
+                        }
+                        if (!hasCustom || (_tick % 300u) == 0u)
+                        {
+                            InjectLocalMusic(ph);
+                        }
+                        _phInjected = true;
                     }
 
                     int curMusicId = PlayerPrefs.GetInt(DPlayerPrefs.PHONOGRAPH_MUSICID, 0);
                     if (curMusicId >= 88000)
                     {
-                        CPhonograph.sMusicData match = ph.m_listMusic.Find(m => m.nMusicID == curMusicId);
+                        CPhonograph.sMusicData match = null;
+                        for (int i = 0; i < ph.m_listMusic.Count; i++)
+                        {
+                            if (ph.m_listMusic[i].nMusicID == curMusicId) { match = ph.m_listMusic[i]; break; }
+                        }
                         if (match != null && !string.IsNullOrEmpty(match.szFileName))
                         {
-                            if (_playingMp3Path != match.szFileName)
+                            bool trackChanged = (_playingMp3Path != match.szFileName);
+                            if (trackChanged)
                             {
                                 PlayLocalMusic(match.szFileName);
                             }
-                            Component anim = ph.GetComponent("Animator");
-                            if (anim != null) anim.SendMessage("Play", "liushengji_playing");
+                            if (trackChanged || (_tick % 60u) == 0u)
+                            {
+                                if (_cachedPhAnim == null) _cachedPhAnim = ph.GetComponent("Animator");
+                                if (_cachedPhAnim != null) _cachedPhAnim.SendMessage("Play", "liushengji_playing");
+                            }
                         }
                         else
                         {
@@ -2585,6 +5002,7 @@ namespace ModBridge
                 {
                     StopLocalMusic();
                     ph.m_listMusic.RemoveAll(m => m.nMusicID >= 88000);
+                    _phInjected = false;
                 }
             }
             catch { }

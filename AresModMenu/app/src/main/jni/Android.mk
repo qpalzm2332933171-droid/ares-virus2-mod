@@ -38,6 +38,7 @@ LOCAL_SRC_FILES := Main.cpp \
     il2cpp_bridge.cpp \
     mod_features.cpp \
     mod_hooks.cpp \
+    mod_http.cpp \
     Menu/Jni.cpp \
     Menu/Menu.cpp \
     Menu/Setup.cpp \

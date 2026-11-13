@@ -65,14 +65,123 @@ import java.util.concurrent.Executors;
 
 /**
  * Modern landscape glassmorphic Mod Console (6 tabs):
- *  0: 🎒 物品发放 (4-5 col compact icon+id+name grid, long-press rich detail popup, 1/999 + 全选/清空, dynamic reload)
- *  1: 📊 全部属性 (smooth ViewHolder editing & locking across all 50 DPropertyKey items, fixed groups)
- *  2: ✨ Buff施加 (smooth async-icon multi-select, fixed BuffJudge -1/0/1 filter)
- *  3: 🛠️ 其他功能 (Anti-Cheat, Ammo, Durability, Blueprints, Paid Unlock, Instant Interact, Warehouse InfStack, Noclip, MachineGun+Rate)
- *  4: 🎨 主题风格 (5 distinct live-switchable persisted themes + FAB reskin)
- *  5: ⚙️ 诊断设置 (ModShm diagnostics, dynamic resync, reset FAB, save prefs)
+ *  0: 物品发放 (4-5 col compact icon+id+name grid, long-press rich detail popup, 1/999 + 全选/清空, dynamic reload)
+ *  1: 全部属性 (smooth ViewHolder editing & locking across all 50 DPropertyKey items, fixed groups)
+ *  2: Buff施加 (smooth async-icon multi-select, fixed BuffJudge -1/0/1 filter)
+ *  3: 其他功能 (Anti-Cheat, Ammo, Durability, Blueprints, Paid Unlock, Instant Interact, Warehouse InfStack, Noclip, MachineGun+Rate)
+ *  4: 主题风格 (5 distinct live-switchable persisted themes + FAB reskin)
+ *  5: 诊断设置 (ModShm diagnostics, dynamic resync, reset FAB, save prefs)
  */
 public final class ModConsole {
+
+    public static final String CURRENT_VERSION_NAME = "v1.2.0";
+    public static final int CURRENT_VERSION_CODE = 6;
+    private static boolean s_hasCheckedUpdateOnLaunch = false;
+
+    private void checkUpdate(final boolean manual) {
+        if (manual) {
+            Toast.makeText(ctx, "正在检测最新版本...", Toast.LENGTH_SHORT).show();
+        }
+        new Thread(new Runnable() {
+            @Override public void run() {
+                String[] urls = new String[] {
+                    "https://gh-proxy.org/https://raw.githubusercontent.com/qpalzm2332933171-droid/ares-virus2-mod/main/version.json",
+                    "https://cdn.gh-proxy.org/https://raw.githubusercontent.com/qpalzm2332933171-droid/ares-virus2-mod/main/version.json",
+                    "https://hk.gh-proxy.org/https://raw.githubusercontent.com/qpalzm2332933171-droid/ares-virus2-mod/main/version.json",
+                    "https://fastly.jsdelivr.net/gh/qpalzm2332933171-droid/ares-virus2-mod@main/version.json",
+                    "https://gcore.jsdelivr.net/gh/qpalzm2332933171-droid/ares-virus2-mod@main/version.json",
+                    "https://cdn.jsdelivr.net/gh/qpalzm2332933171-droid/ares-virus2-mod@main/version.json",
+                    "https://raw.githubusercontent.com/qpalzm2332933171-droid/ares-virus2-mod/main/version.json"
+                };
+                JSONObject res = null;
+                for (String u : urls) {
+                    try {
+                        java.net.URL url = new java.net.URL(u);
+                        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                        conn.setRequestMethod("GET");
+                        conn.setInstanceFollowRedirects(true);
+                        conn.setRequestProperty("User-Agent", "AresModMenu/" + CURRENT_VERSION_NAME);
+                        conn.setRequestProperty("Accept", "application/json,*/*");
+                        conn.setConnectTimeout(3500);
+                        conn.setReadTimeout(3500);
+                        conn.setUseCaches(false);
+                        if (conn.getResponseCode() == 200) {
+                            java.io.InputStream in = conn.getInputStream();
+                            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                            byte[] buf = new byte[1024];
+                            int len;
+                            while ((len = in.read(buf)) != -1) {
+                                baos.write(buf, 0, len);
+                            }
+                            in.close();
+                            String raw = baos.toString("UTF-8");
+                            if (raw.length() > 0 && raw.charAt(0) == '\uFEFF') raw = raw.substring(1);
+                            res = new JSONObject(raw.trim());
+                            conn.disconnect();
+                            break;
+                        }
+                        conn.disconnect();
+                    } catch (Throwable ignored) {}
+                }
+
+                final JSONObject finalRes = res;
+                mainH.post(new Runnable() {
+                    @Override public void run() {
+                        if (finalRes == null) {
+                            if (manual) Toast.makeText(ctx, "检测更新失败，请检查网络", Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+                        int latestCode = finalRes.optInt("versionCode", 0);
+                        final String latestName = finalRes.optString("versionName", "");
+                        final String changelog = finalRes.optString("changelog", "有新版本可用");
+                        String rawDl = finalRes.optString("downloadUrl", "https://gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/latest");
+                        if (rawDl.contains("https://ghproxy.net/")) rawDl = rawDl.replace("https://ghproxy.net/", "https://gh-proxy.org/");
+                        final String downloadUrl = rawDl;
+
+                        if (latestCode > CURRENT_VERSION_CODE) {
+                            showUpdateDialog(latestName, changelog, downloadUrl);
+                        } else {
+                            if (manual) {
+                                Toast.makeText(ctx, "当前已是最新版本 (" + CURRENT_VERSION_NAME + ")", Toast.LENGTH_SHORT).show();
+                            }
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void showUpdateDialog(String versionName, String changelog, final String downloadUrl) {
+        try {
+            android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(ctx);
+            builder.setTitle("发现新版本 " + versionName);
+            builder.setMessage(changelog);
+            builder.setPositiveButton("立即更新 (国内高速)", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface dialog, int which) {
+                    try {
+                        android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(downloadUrl));
+                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                        ctx.startActivity(intent);
+                    } catch (Throwable t) {
+                        Toast.makeText(ctx, "无法打开浏览器: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+            builder.setNegativeButton("稍后再说", null);
+            android.app.AlertDialog dlg = builder.create();
+            if (!(ctx instanceof android.app.Activity) && dlg.getWindow() != null) {
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    dlg.getWindow().setType(android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY);
+                } else {
+                    dlg.getWindow().setType(android.view.WindowManager.LayoutParams.TYPE_PHONE);
+                }
+            }
+            dlg.show();
+        } catch (Throwable t) {
+            Toast.makeText(ctx, "发现新版本: " + versionName + "\n请至GitHub仓库下载", Toast.LENGTH_LONG).show();
+        }
+    }
+
 
     public interface Callbacks {
         void onMinimize();
@@ -288,6 +397,7 @@ public final class ModConsole {
         SUBTYPE_NAMES.put(52, "52 杂物");
         SUBTYPE_NAMES.put(53, "53 家园家具");
         SUBTYPE_NAMES.put(54, "54 摆件");
+        SUBTYPE_NAMES.put(55, "55 观赏鱼");
     }
 
     private final Context ctx;
@@ -319,6 +429,7 @@ public final class ModConsole {
 
     // Toggle states (synced with NativeQuery(10) & Preferences)
     private boolean flagAC = true;
+    private boolean flagBlockCloud = true;
     private boolean flagAmmo = false;
     private boolean flagEndur = false;
     private boolean flagPaid = false;
@@ -332,7 +443,7 @@ public final class ModConsole {
     private int mgRateX10 = 100; // default 10.0 shots/s
 
     // Other-Features switch widgets & cardMG
-    private Switch swAC, swAmmo, swEndur, swInstant, swInfStack, swNoclip, swSewer, swEvent, swPhono, swPaid, swAutoProps, swMG;
+    private Switch swAC, swBlockCloud, swAmmo, swEndur, swInstant, swInfStack, swNoclip, swSewer, swEvent, swPhono, swPaid, swAutoProps, swMG;
     private LinearLayout cardMG;
     private TextView tvMGState;
     private final List<View> otherFeatureRows = new ArrayList<View>();
@@ -347,6 +458,8 @@ public final class ModConsole {
         String name;
         int num;
         int end;
+        int refit;
+        int slots;
         String icon;
     }
     private FrameLayout delModalOverlay;
@@ -409,6 +522,7 @@ public final class ModConsole {
         this.curTheme = THEMES[this.curThemeIdx];
 
         this.flagAC = Preferences.loadPrefBool("全代码拦截作弊检验/上报/封号", 60, true);
+        this.flagBlockCloud = Preferences.loadPrefBool("100%拦截云存档上传", 84, true);
         this.flagAmmo = Preferences.loadPrefBool("子弹不减反增", 40, false);
         this.flagEndur = Preferences.loadPrefBool("锁定武器/装备耐久", 41, false);
         this.flagPaid = Preferences.loadPrefBool("一键解锁全部付费道具", 70, false);
@@ -426,6 +540,15 @@ public final class ModConsole {
         loadSavedPropsFromPrefs();
 
         prepareDynEnvironmentAsync();
+
+        if (!s_hasCheckedUpdateOnLaunch) {
+            s_hasCheckedUpdateOnLaunch = true;
+            mainH.postDelayed(new Runnable() {
+                @Override public void run() {
+                    checkUpdate(false);
+                }
+            }, 3000);
+        }
     }
 
     private void loadSavedPropsFromPrefs() {
@@ -670,7 +793,9 @@ public final class ModConsole {
             byte[] buf = new byte[8192];
             int r;
             while ((r = fis.read(buf)) > 0) bos.write(buf, 0, r);
-            return new String(bos.toByteArray(), "UTF-8");
+            String s = new String(bos.toByteArray(), "UTF-8");
+            if (s.length() > 0 && s.charAt(0) == '\uFEFF') s = s.substring(1);
+            return s.trim();
         } catch (Throwable ignored) {
             return "";
         }
@@ -959,7 +1084,7 @@ public final class ModConsole {
         body.addView(sidebarView);
 
         String[] tabTitles = new String[] {
-            "🎒 物品发放", "🗑️ 物品删除", "💎 货币修改", "📊 全部属性", "✨ Buff施加", "🛠️ 其他功能", "🎨 主题风格", "⚙️ 诊断设置"
+            "物品发放", "物品删除", "货币修改", "全部属性", "Buff施加", "其他功能", "主题风格", "诊断设置"
         };
         for (int i = 0; i < tabTitles.length; i++) {
             final int tIdx = i;
@@ -1272,7 +1397,7 @@ public final class ModConsole {
                                 boolean showToast = manualDynSyncRequested || (isUpdate && countsChanged);
                                 manualDynSyncRequested = false;
                                 if (showToast) {
-                                    Toast.makeText(ctx, "动态数据已刷新: 物品 " + items.size() + " / Buff " + buffs.size(), Toast.LENGTH_SHORT).show();
+                                    Toast.makeText(ctx, "已扫描运行期全量配表: 物品 " + items.size() + " 项 / Buff " + buffs.size() + " 项", Toast.LENGTH_SHORT).show();
                                 }
                             }
                         });
@@ -1283,6 +1408,7 @@ public final class ModConsole {
             // Pull flags from shm after initial sync
             if (initialBridgeSynced) {
                 flagAC = obj.optInt("ac", 1) != 0;
+                flagBlockCloud = obj.optInt("blockCloud", 1) != 0;
                 flagAmmo = obj.optInt("ammo", 0) != 0;
                 flagEndur = obj.optInt("end", 0) != 0;
                 flagPaid = obj.optInt("paid", 0) != 0;
@@ -1403,6 +1529,7 @@ public final class ModConsole {
     private void syncAllFlagsToNative() {
         XposedEntry.antiCheatEnabled = flagAC;
         Menu.NativeQuery(10, 0, flagAC ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 11, flagBlockCloud ? 1 : 0, 0L, "");
         Menu.NativeQuery(10, 1, flagAmmo ? 1 : 0, 0L, "");
         Menu.NativeQuery(10, 2, flagEndur ? 1 : 0, 0L, "");
         Menu.NativeQuery(10, 3, flagPaid ? 1 : 0, 0L, "");
@@ -1424,6 +1551,7 @@ public final class ModConsole {
 
     private void syncToggleCardStyles() {
         safeSetChecked(swAC, flagAC);
+        safeSetChecked(swBlockCloud, flagBlockCloud);
         safeSetChecked(swAmmo, flagAmmo);
         safeSetChecked(swEndur, flagEndur);
         safeSetChecked(swInstant, flagInstant);
@@ -1510,8 +1638,8 @@ public final class ModConsole {
         LinearLayout top = new LinearLayout(ctx);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        final Button btnBag = makePillBtn("🎒 背包", curTheme.btnBlue, 30);
-        final Button btnBox = makePillBtn("📦 仓库", curTheme.btnSlate, 30);
+        final Button btnBag = makePillBtn("背包", curTheme.btnBlue, 30);
+        final Button btnBox = makePillBtn("仓库", curTheme.btnSlate, 30);
         final Spinner spBox = new Spinner(ctx);
         spBox.setVisibility(View.GONE);
         LinearLayout.LayoutParams spLp = new LinearLayout.LayoutParams(dp(130), dp(30));
@@ -1520,7 +1648,7 @@ public final class ModConsole {
         boxAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spBox.setAdapter(boxAdapter);
 
-        final EditText etSearch = makeDarkEdit("🔍 搜索名称 / ID (长按看详情)", false);
+        final EditText etSearch = makeDarkEdit("搜索名称 / ID (长按查看详情)", false);
         etSearch.setLayoutParams(new LinearLayout.LayoutParams(0, dp(30), 1f));
         top.addView(btnBag);
         top.addView(btnBox);
@@ -1979,7 +2107,7 @@ public final class ModConsole {
         LinearLayout top = new LinearLayout(ctx);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        final EditText etSearch = makeDarkEdit("🔍 搜索属性名 / key...", false);
+        final EditText etSearch = makeDarkEdit("搜索属性名 / key...", false);
         etSearch.setLayoutParams(new LinearLayout.LayoutParams(0, dp(30), 1f));
         top.addView(etSearch);
         final Button btnRefresh = makePillBtn("刷新实时值", curTheme.btnBlue, 30);
@@ -2322,7 +2450,7 @@ public final class ModConsole {
         LinearLayout top = new LinearLayout(ctx);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        final EditText etSearch = makeDarkEdit("🔍 搜索 Buff 名称 / ID / 效果...", false);
+        final EditText etSearch = makeDarkEdit("搜索 Buff 名称 / ID / 效果...", false);
         etSearch.setLayoutParams(new LinearLayout.LayoutParams(0, dp(30), 1f));
         top.addView(etSearch);
         final Button btnAll = makePillBtn("全部", curTheme.btnBlue, 30);
@@ -2652,17 +2780,30 @@ public final class ModConsole {
             File f = new File(ctx.getFilesDir(), "dyn_warehouse.json");
             String raw = readFileText(f);
             if (raw != null && raw.startsWith("[")) {
+                List<ItemInfo> cat = loadItems(ctx, false);
+                Map<Integer, ItemInfo> itemMap = new HashMap<Integer, ItemInfo>(cat.size() * 2 + 16);
+                for (ItemInfo ii : cat) itemMap.put(ii.id, ii);
                 JSONArray arr = new JSONArray(raw);
                 for (int i = 0; i < arr.length(); i++) {
                     JSONObject o = arr.getJSONObject(i);
                     WarehouseItem wi = new WarehouseItem();
-                    wi.boxId = o.optLong("boxId");
-                    wi.uid = o.optLong("uid");
+                    wi.boxId = o.has("box") ? o.optLong("box", 0L) : o.optLong("boxId", 0L);
+                    String su = o.optString("uid", "");
+                    try {
+                        wi.uid = (!su.isEmpty()) ? Long.parseLong(su) : o.optLong("uid");
+                    } catch (Throwable ignored) {
+                        wi.uid = o.optLong("uid");
+                    }
                     wi.id = o.optInt("id");
-                    wi.name = o.optString("name", "未知物品");
                     wi.num = o.optInt("num", 1);
                     wi.end = o.optInt("end", 0);
-                    wi.icon = o.optString("icon", "");
+                    wi.refit = o.optInt("refit", 0);
+                    wi.slots = o.optInt("slots", 1);
+                    ItemInfo ref = itemMap.get(wi.id);
+                    String rawName = o.optString("name", "");
+                    String rawIcon = o.optString("icon", "");
+                    wi.name = !rawName.isEmpty() ? rawName : ((ref != null && ref.name != null && !ref.name.isEmpty()) ? ref.name : ("物品 #" + wi.id));
+                    wi.icon = !rawIcon.isEmpty() ? rawIcon : ((ref != null && ref.icon != null) ? ref.icon : "");
                     list.add(wi);
                 }
             }
@@ -2816,8 +2957,10 @@ public final class ModConsole {
         delModalCard.setBackground(makeRoundBox(curTheme.panelBg, curTheme.accent, dp(2), dp(14)));
         delModalTitle.setText(item.name + "   #" + item.id);
         delModalTitle.setTextColor(curTheme.textPri);
-        String sub = "箱子 #" + item.boxId + " · 当前存量: " + item.num;
+        String sub = (item.boxId == 0L ? "随身仓库" : ("箱子 #" + item.boxId)) + " · 当前存量: " + item.num;
         if (item.end > 0) sub += " · 耐久 " + item.end;
+        if (item.refit > 0) sub += " · 已改造";
+        if (item.slots > 1) sub += " · " + item.slots + "格";
         delModalSub.setText(sub);
         delModalSub.setTextColor(curTheme.accent);
 
@@ -2845,9 +2988,9 @@ public final class ModConsole {
         LinearLayout top = new LinearLayout(ctx);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        final EditText etSearch = makeDarkEdit("🔍 搜索仓库物品名称 / ID...", false);
+        final EditText etSearch = makeDarkEdit("搜索仓库物品名称 / ID...", false);
         etSearch.setLayoutParams(new LinearLayout.LayoutParams(0, dp(30), 1f));
-        final Button btnRef = makePillBtn("🔄 刷新仓库", curTheme.btnBlue, 30);
+        final Button btnRef = makePillBtn("刷新仓库", curTheme.btnBlue, 30);
         top.addView(etSearch);
         top.addView(btnRef);
         root.addView(top);
@@ -2950,8 +3093,10 @@ public final class ModConsole {
                 h.card.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
                 h.tvName.setText(it.name);
                 h.tvName.setTextColor(curTheme.textPri);
-                String sub = "箱子#" + it.boxId + " · ID:" + it.id;
+                String sub = (it.boxId == 0L ? "随身仓库" : ("箱子#" + it.boxId)) + " · ID:" + it.id;
                 if (it.end > 0) sub += " · 耐久" + it.end;
+                if (it.refit > 0) sub += " · 已改造";
+                if (it.slots > 1) sub += " · " + it.slots + "格";
                 h.tvInfo.setText(sub);
                 h.tvInfo.setTextColor(curTheme.textSec);
                 h.tvNum.setText("x" + it.num);
@@ -3029,7 +3174,7 @@ public final class ModConsole {
                     if (seen.add(wi.boxId)) boxList.add(wi.boxId);
                 }
                 // All boxes button
-                final Button btnAllBoxes = makePillBtn("全部箱子 (" + allItems.size() + ")", selectedBoxId[0] == -1L ? curTheme.btnBlue : curTheme.btnSlate, 26);
+                final Button btnAllBoxes = makePillBtn("全部 (" + allItems.size() + ")", selectedBoxId[0] == -1L ? curTheme.btnBlue : curTheme.btnSlate, 26);
                 btnAllBoxes.setOnClickListener(new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         selectedBoxId[0] = -1L;
@@ -3048,7 +3193,8 @@ public final class ModConsole {
                 for (final Long bId : boxList) {
                     int bCnt = 0;
                     for (WarehouseItem wi : allItems) if (wi.boxId == bId) bCnt++;
-                    Button bBtn = makePillBtn("箱子 #" + bId + " (" + bCnt + ")", selectedBoxId[0] == bId ? curTheme.btnBlue : curTheme.btnSlate, 26);
+                    String bLabel = (bId == 0L) ? ("随身仓库 (" + bCnt + ")") : ("箱子 #" + bId + " (" + bCnt + ")");
+                    Button bBtn = makePillBtn(bLabel, selectedBoxId[0] == bId ? curTheme.btnBlue : curTheme.btnSlate, 26);
                     bBtn.setOnClickListener(new View.OnClickListener() {
                         @Override public void onClick(View v) {
                             selectedBoxId[0] = bId;
@@ -3056,7 +3202,7 @@ public final class ModConsole {
                             for (int k = 0; k < rowBoxes.getChildCount(); k++) {
                                 View c = rowBoxes.getChildAt(k);
                                 if (c instanceof Button) {
-                                    boolean active = (k > 0 && boxList.get(k - 1) == selectedBoxId[0]);
+                                    boolean active = (k > 0 && boxList.get(k - 1).longValue() == selectedBoxId[0]);
                                     c.setBackground(makeRoundBox(active ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
                                 }
                             }
@@ -3140,13 +3286,13 @@ public final class ModConsole {
         tpLp.setMargins(0, 0, 0, dp(8));
 
         TextView tvTip = new TextView(ctx);
-        tvTip.setText("💎 原生 CPaySystem 货币修改\n实时同步钻石、游园币、游园积分与累计充值，存档内与游戏商城均生效");
+        tvTip.setText("原生 CPaySystem 货币修改\n实时同步钻石、游园币、游园积分与累计充值，存档内与游戏商城均生效");
         tvTip.setTextColor(curTheme.accent);
         tvTip.setTextSize(11.5f);
         tvTip.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         tipCard.addView(tvTip);
 
-        final Button btnRefCurr = makePillBtn("🔄 刷新", curTheme.btnBlue, 28);
+        final Button btnRefCurr = makePillBtn("刷新", curTheme.btnBlue, 28);
         btnRefCurr.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 Menu.NativeQuery(9, 0, 0, 0L, "");
@@ -3162,7 +3308,6 @@ public final class ModConsole {
         col.addView(tipCard, tpLp);
 
         final String[] names = new String[] { "钻石 (Diamond)", "游园币 (Garden Coin)", "游园积分 (Garden Point)", "累计充值额度 (Cumulative Payment)" };
-        final String[] icons = new String[] { "💎", "🪙", "🎟️", "💰" };
         final int[][] quickSets = new int[][] {
             { 1000, 10000, 100000, 999999 },
             { 1000, 10000, 100000, 999999 },
@@ -3171,11 +3316,20 @@ public final class ModConsole {
         };
 
         final List<LinearLayout> cCards = new ArrayList<LinearLayout>();
+        final List<TextView> cPriTexts = new ArrayList<TextView>();
+        final List<TextView> cSecTexts = new ArrayList<TextView>();
+        final List<EditText> cEdits = new ArrayList<EditText>();
+        final List<Button> cGreenBtns = new ArrayList<Button>();
+        final List<Button> cBlueBtns = new ArrayList<Button>();
+        final List<Button> cSlateBtns = new ArrayList<Button>();
+
+        cCards.add(tipCard);
+        cSecTexts.add(tvTip);
+        cBlueBtns.add(btnRefCurr);
 
         for (int i = 0; i < 4; i++) {
             final int type = i;
             final String cName = names[i];
-            final String cIcon = icons[i];
             final int[] qVals = quickSets[i];
 
             final LinearLayout card = new LinearLayout(ctx);
@@ -3191,12 +3345,13 @@ public final class ModConsole {
             topR.setGravity(Gravity.CENTER_VERTICAL);
 
             TextView tvTitle = new TextView(ctx);
-            tvTitle.setText(cIcon + " " + cName);
+            tvTitle.setText(cName);
             tvTitle.setTextSize(13);
             tvTitle.setTypeface(null, Typeface.BOLD);
             tvTitle.setTextColor(curTheme.textPri);
             tvTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             topR.addView(tvTitle);
+            cPriTexts.add(tvTitle);
 
             final TextView tvVal = new TextView(ctx);
             tvVal.setText("当前: 0");
@@ -3219,6 +3374,7 @@ public final class ModConsole {
             tvQLbl.setTextSize(11);
             tvQLbl.setTextColor(curTheme.textSec);
             qRow.addView(tvQLbl);
+            cSecTexts.add(tvQLbl);
 
             for (final int qv : qVals) {
                 final boolean isMax = (qv == 999999 || qv == 99999);
@@ -3238,6 +3394,7 @@ public final class ModConsole {
                     }
                 });
                 qRow.addView(qb);
+                if (isMax) cGreenBtns.add(qb); else cBlueBtns.add(qb);
             }
             card.addView(qRow, qLp);
 
@@ -3249,6 +3406,7 @@ public final class ModConsole {
             final EditText etVal = makeDarkEdit("自定义数值...", true);
             etVal.setLayoutParams(new LinearLayout.LayoutParams(0, dp(30), 1f));
             inRow.addView(etVal);
+            cEdits.add(etVal);
 
             final Button btnSet = makePillBtn("设定此数值", curTheme.btnGreen, 30);
             btnSet.setTextSize(10.5f);
@@ -3265,6 +3423,7 @@ public final class ModConsole {
                 }
             });
             inRow.addView(btnSet);
+            cGreenBtns.add(btnSet);
 
             final Button btnAdd = makePillBtn("增加该值", curTheme.btnSlate, 30);
             btnAdd.setTextSize(10.5f);
@@ -3282,6 +3441,7 @@ public final class ModConsole {
                 }
             });
             inRow.addView(btnAdd);
+            cSlateBtns.add(btnAdd);
 
             card.addView(inRow);
             cCards.add(card);
@@ -3298,7 +3458,7 @@ public final class ModConsole {
                         liveCurrency[0] = o.optInt("diamond", 0);
                         liveCurrency[1] = o.optInt("gardenCoin", 0);
                         liveCurrency[2] = o.optInt("gardenPoint", 0);
-                        liveCurrency[3] = o.optInt("cumulativePayment", 0);
+                        liveCurrency[3] = o.has("cumulativePayment") ? o.optInt("cumulativePayment", 0) : o.optInt("cumulativePay", 0);
                         for (int k = 0; k < 4; k++) {
                             if (tvCurrencyVals[k] != null) {
                                 tvCurrencyVals[k].setText("当前: " + liveCurrency[k]);
@@ -3311,9 +3471,34 @@ public final class ModConsole {
 
         themeRefreshHooks.add(new Runnable() {
             @Override public void run() {
-                btnRefCurr.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
                 for (LinearLayout c : cCards) {
                     c.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(10)));
+                }
+                for (TextView tv : cPriTexts) {
+                    tv.setTextColor(curTheme.textPri);
+                }
+                for (TextView tv : cSecTexts) {
+                    tv.setTextColor(curTheme.textSec);
+                }
+                for (EditText et : cEdits) {
+                    et.setBackground(makeRoundBox(curTheme.inputBg, curTheme.cardEdge, dp(1), dp(6)));
+                    et.setTextColor(curTheme.textPri);
+                    et.setHintTextColor(curTheme.textSec);
+                }
+                for (Button b : cGreenBtns) {
+                    b.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+                    b.setTextColor(0xFFFFFFFF);
+                }
+                for (Button b : cBlueBtns) {
+                    b.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
+                    b.setTextColor(0xFFFFFFFF);
+                }
+                for (Button b : cSlateBtns) {
+                    b.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                    b.setTextColor(0xFFFFFFFF);
+                }
+                for (TextView tv : tvCurrencyVals) {
+                    if (tv != null) tv.setTextColor(curTheme.emerald);
                 }
             }
         });
@@ -3397,7 +3582,7 @@ public final class ModConsole {
 
         // 1. Anti-cheat switch
         final Switch[] swHolderAC = new Switch[1];
-        LinearLayout rAC = makeSwitchRow("🔒 全链路反作弊保护", "C#协议+底层反作弊拦截，防止封号与上报 (推荐常开)", flagAC, swHolderAC, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rAC = makeSwitchRow("全链路反作弊保护", "C#协议+底层反作弊拦截，防止封号、校验与异常上报 (推荐常开)", flagAC, swHolderAC, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagAC = isOn;
                 XposedEntry.antiCheatEnabled = flagAC;
@@ -3408,9 +3593,21 @@ public final class ModConsole {
         swAC = swHolderAC[0];
         col.addView(rAC);
 
+        // 1b. Anti-cheat: 100% Block Cloud Save Uploads (including auto cloud upload in Garden Town)
+        final Switch[] swHolderBlockCloud = new Switch[1];
+        LinearLayout rBlockCloud = makeSwitchRow("拦截云存档上传", "反作弊核心项：100%拦截游园镇获取重要物品自动云存及所有手动云存 (推荐常开)", flagBlockCloud, swHolderBlockCloud, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagBlockCloud = isOn;
+                Preferences.changeFeatureBool("100%拦截云存档上传", 84, flagBlockCloud);
+                Menu.NativeQuery(10, 11, flagBlockCloud ? 1 : 0, 0L, "");
+            }
+        });
+        swBlockCloud = swHolderBlockCloud[0];
+        col.addView(rBlockCloud);
+
         // 2. Ammo switch
         final Switch[] swHolderAmmo = new Switch[1];
-        LinearLayout rAmmo = makeSwitchRow("🔫 子弹不减反增", "远程枪械/弓弩开火消耗弹药反而 +1", flagAmmo, swHolderAmmo, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rAmmo = makeSwitchRow("子弹不减反增", "远程枪械/弓弩开火消耗弹药反而 +1", flagAmmo, swHolderAmmo, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagAmmo = isOn;
                 Preferences.changeFeatureBool("子弹不减反增", 40, flagAmmo);
@@ -3422,7 +3619,7 @@ public final class ModConsole {
 
         // 3. Durability switch + "补满耐久" button
         final Switch[] swHolderEndur = new Switch[1];
-        LinearLayout rEndur = makeSwitchRow("🛡️ 锁定装备耐久", "全部武器、护甲防具零损耗", flagEndur, swHolderEndur, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rEndur = makeSwitchRow("锁定装备耐久", "全部武器、护甲防具零损耗", flagEndur, swHolderEndur, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagEndur = isOn;
                 Preferences.changeFeatureBool("锁定武器/装备耐久", 41, flagEndur);
@@ -3443,7 +3640,7 @@ public final class ModConsole {
 
         // 4. Instant interact switch (includes tree, mine, furniture chopping, pickup, home)
         final Switch[] swHolderInst = new Switch[1];
-        LinearLayout rInst = makeSwitchRow("⚡ 关闭交互时间", "砍树/采矿/砍家具/采集/拾取/开箱/回家0秒瞬时交互无需读条", flagInstant, swHolderInst, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rInst = makeSwitchRow("关闭交互时间", "砍树/采矿/砍家具/采集/拾取/开箱/回家0秒瞬时交互无需读条", flagInstant, swHolderInst, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagInstant = isOn;
                 Preferences.changeFeatureBool("关闭交互时间", 71, flagInstant);
@@ -3455,7 +3652,7 @@ public final class ModConsole {
 
         // 5. Infinite stack switch (strictly warehouse only and matches durability/NBT)
         final Switch[] swHolderInfStk = new Switch[1];
-        LinearLayout rInfStk = makeSwitchRow("📦 仓库无限堆叠", "仅仓库生效，且仅限相同NBT/耐久度物品无限堆叠", flagInfStack, swHolderInfStk, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rInfStk = makeSwitchRow("仓库无限堆叠", "仅仓库生效，且仅限相同NBT/耐久度物品无限堆叠", flagInfStack, swHolderInfStk, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagInfStack = isOn;
                 Preferences.changeFeatureBool("无限堆叠(仓库)", 72, flagInfStack);
@@ -3467,7 +3664,7 @@ public final class ModConsole {
 
         // 6. Noclip switch
         final Switch[] swHolderNoclip = new Switch[1];
-        LinearLayout rNoclip = makeSwitchRow("👻 穿墙模式", "关闭主角实体碰撞箱，自由穿行任何障碍与地图", flagNoclip, swHolderNoclip, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rNoclip = makeSwitchRow("穿墙模式", "关闭主角实体碰撞箱，自由穿行任何障碍与地图", flagNoclip, swHolderNoclip, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagNoclip = isOn;
                 Preferences.changeFeatureBool("穿墙模式", 73, flagNoclip);
@@ -3479,7 +3676,7 @@ public final class ModConsole {
 
         // 7. Sewer highlight switch
         final Switch[] swHolderSewer = new Switch[1];
-        LinearLayout rSewer = makeSwitchRow("💡 下水道/洞穴全图高亮", "下水道、洞穴等黑暗地图始终全图照明高亮", flagSewer, swHolderSewer, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rSewer = makeSwitchRow("下水道/洞穴全图高亮", "下水道、洞穴等黑暗地图始终全图照明高亮", flagSewer, swHolderSewer, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagSewer = isOn;
                 Preferences.changeFeatureBool("下水道高亮", 81, flagSewer);
@@ -3492,7 +3689,7 @@ public final class ModConsole {
 
         // 8. Always event switch
         final Switch[] swHolderEvent = new Switch[1];
-        LinearLayout rEvent = makeSwitchRow("🎪 限时活动全开放", "周末/节日/限时开放的活动玩法与商人常驻开放", flagEvent, swHolderEvent, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rEvent = makeSwitchRow("限时活动全开放", "周末/节日/限时开放的活动玩法与商人常驻开放", flagEvent, swHolderEvent, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagEvent = isOn;
                 Preferences.changeFeatureBool("限时活动开放", 82, flagEvent);
@@ -3505,7 +3702,7 @@ public final class ModConsole {
 
         // 9. Phonograph local MP3 switch
         final Switch[] swHolderPhono = new Switch[1];
-        LinearLayout rPhono = makeSwitchRow("📻 留声机播放本地音乐", "家中留声机扫描播放 /sdcard/Music 或 /sdcard/AresMod/Music 的MP3", flagPhono, swHolderPhono, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rPhono = makeSwitchRow("留声机播放本地音乐", "家中留声机扫描播放 /sdcard/Music 或 /sdcard/AresMod/Music 的MP3", flagPhono, swHolderPhono, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagPhono = isOn;
                 Preferences.changeFeatureBool("留声机播放本地音乐", 83, flagPhono);
@@ -3518,7 +3715,7 @@ public final class ModConsole {
 
         // 10. Unlock paid items switch
         final Switch[] swHolderPaid = new Switch[1];
-        LinearLayout rPaid = makeSwitchRow("💎 一键解锁全部付费道具", "猎人小屋/哈士奇/猪王/商城与DLC扩展内容", flagPaid, swHolderPaid, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rPaid = makeSwitchRow("一键解锁全部付费道具", "猎人小屋/哈士奇/猪王/商城与DLC扩展内容", flagPaid, swHolderPaid, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagPaid = isOn;
                 Preferences.changeFeatureBool("一键解锁全部付费道具", 70, flagPaid);
@@ -3543,7 +3740,7 @@ public final class ModConsole {
         bpCol.setOrientation(LinearLayout.VERTICAL);
         bpCol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView tvBpT = new TextView(ctx);
-        tvBpT.setText("📜 一键解锁全部蓝图");
+        tvBpT.setText("一键解锁全部蓝图");
         tvBpT.setTextSize(12f);
         tvBpT.setTextColor(curTheme.textPri);
         tvBpT.setTypeface(null, Typeface.BOLD);
@@ -3573,7 +3770,7 @@ public final class ModConsole {
 
         // 12. Saved Props row with Save & Clear buttons
         final Switch[] swHolderProps = new Switch[1];
-        LinearLayout rProps = makeSwitchRow("💾 属性配置持久化", "进存档自动加载已保存的数值与锁定状态", flagAutoProps, swHolderProps, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout rProps = makeSwitchRow("属性配置持久化", "进存档自动加载已保存的数值与锁定状态", flagAutoProps, swHolderProps, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
                 flagAutoProps = isOn;
                 modPrefs.edit().putBoolean("auto_restore_props", flagAutoProps).apply();
@@ -3617,7 +3814,7 @@ public final class ModConsole {
         mgTop.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView tvMgT = new TextView(ctx);
-        tvMgT.setText("🔥 机关枪模式 (仅远程枪械/弓弩有效，近战刀棍不受影响)");
+        tvMgT.setText("机关枪模式 (仅远程枪械/弓弩有效，近战刀棍不受影响)");
         tvMgT.setTextSize(12.5f);
         tvMgT.setTextColor(curTheme.textPri);
         tvMgT.setTypeface(null, Typeface.BOLD);
@@ -3814,6 +4011,36 @@ public final class ModConsole {
         sv.addView(col);
         wrap.addView(sv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        final LinearLayout verCard = new LinearLayout(ctx);
+        verCard.setOrientation(LinearLayout.VERTICAL);
+        verCard.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(10)));
+        verCard.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout.LayoutParams vLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        vLp.setMargins(0, 0, 0, dp(8));
+
+        final TextView tvVerTitle = new TextView(ctx);
+        tvVerTitle.setText("Mod 版本与在线更新");
+        tvVerTitle.setTextColor(curTheme.accent);
+        tvVerTitle.setTextSize(13);
+        tvVerTitle.setTypeface(null, Typeface.BOLD);
+        verCard.addView(tvVerTitle);
+
+        final TextView tvVerInfo = new TextView(ctx);
+        tvVerInfo.setText("Mod版本: " + CURRENT_VERSION_NAME + " (Build " + CURRENT_VERSION_CODE + ")\n支持国内多镜像直连检测与下载 (无需VPN)");
+        tvVerInfo.setTextColor(curTheme.textPri);
+        tvVerInfo.setTextSize(11.5f);
+        tvVerInfo.setPadding(0, dp(6), 0, dp(6));
+        verCard.addView(tvVerInfo);
+
+        final Button btnCheckUpdate = makePillBtn("检查更新", curTheme.btnGreen, 32);
+        btnCheckUpdate.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                checkUpdate(true);
+            }
+        });
+        verCard.addView(btnCheckUpdate);
+        col.addView(verCard, vLp);
+
         diagCard = new LinearLayout(ctx);
         diagCard.setOrientation(LinearLayout.VERTICAL);
         diagCard.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(10)));
@@ -3896,6 +4123,10 @@ public final class ModConsole {
 
         themeRefreshHooks.add(new Runnable() {
             @Override public void run() {
+                verCard.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(10)));
+                tvVerTitle.setTextColor(curTheme.accent);
+                tvVerInfo.setTextColor(curTheme.textPri);
+                btnCheckUpdate.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
                 btnRef.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
                 btnSyncDyn.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
                 btnResetPos.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));

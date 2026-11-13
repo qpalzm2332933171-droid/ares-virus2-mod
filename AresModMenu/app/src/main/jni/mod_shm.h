@@ -25,6 +25,7 @@ enum : uint32_t {
     MOD_FLAG_SEWER_HIGHLIGHT     = 1u << 8,
     MOD_FLAG_ALWAYS_EVENT        = 1u << 9,
     MOD_FLAG_PHONOGRAPH_LOCAL    = 1u << 10,
+    MOD_FLAG_CLOUD_ALLOW         = 1u << 11, /* 0 = Block Cloud Save Upload ENABLED (DEFAULT!), 1 = allow */
 };
 
 enum : int32_t {
@@ -88,7 +89,7 @@ struct ModShm {
     uint32_t cmdOkCount;     /* 0x2C: cumulative executed command successes */
     uint32_t cmdFailCount;   /* 0x30: cumulative executed command failures */
     int32_t  lastFailArg1;   /* 0x34: arg1 (e.g. itemId/buffId) of last failed command */
-    uint8_t  pad2[8];        /* 0x38..0x3F */
+    uint64_t httpBridgePtr;  /* 0x38..0x3F: pointer to ModHttpBridge (127.0.0.1 loopback proxy) */
     ModCmd   cmds[32];       /* 0x40..0x43F (32 * 32 = 1024 B) */
     uint32_t propSeq;        /* 0x440 */
     int32_t  propCount;      /* 0x444 */
@@ -101,4 +102,23 @@ struct ModShm {
     ModBuffSnap buffs[64];   /* 0xA58..0xC57 (64 * 8 = 512 B) */
     char     lastStatus[256];/* 0xC58..0xD57 */
     char     dynDir[256];    /* 0xD58..0xE57: app files dir for dyn_items.json/dyn_buffs.json/dyn_icons */
+};
+
+#define MOD_HTTP_STATE_IDLE       0u
+#define MOD_HTTP_STATE_REQ_READY  1u
+#define MOD_HTTP_STATE_RESP_READY 2u
+#define MOD_HTTP_MAX_REQ          (64u * 1024u)
+#define MOD_HTTP_MAX_RESP         (4u * 1024u * 1024u)
+
+struct ModHttpBridge {
+    uint32_t port;                     /* 0x00: 127.0.0.1 TCP port (host byte order) */
+    uint32_t state;                    /* 0x04: 0=IDLE, 1=REQ_READY, 2=RESP_READY */
+    uint32_t seq;                      /* 0x08: monotonically incremented per request */
+    int32_t  cmd;                      /* 0x0C: Header_Command int */
+    int32_t  httpStatus;               /* 0x10: HTTP status written by C# */
+    uint32_t reqLen;                   /* 0x14: request body bytes */
+    uint32_t respLen;                  /* 0x18: response body bytes */
+    uint32_t routeTag;                 /* 0x1C: 1=/gs, 2=/db */
+    uint8_t  reqBuf[MOD_HTTP_MAX_REQ]; /* 0x20 */
+    uint8_t  respBuf[MOD_HTTP_MAX_RESP]; /* 0x10020 */
 };
