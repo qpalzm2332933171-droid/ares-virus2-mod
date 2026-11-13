@@ -441,35 +441,37 @@ verify_il("GetDLCInstallInfoByID", il_dlc)
 write_il(0x98f74, il_dlc, 42)
 
 # 7) CHomeContainer.FindMergeTarget (off=0x9c818, Fat hsz=12, csz=135)
-# Bypass bCannotCombine and nEndurance!=0 checks when (endianDiff1 & 32) != 0.
+# Bypass bCannotCombine and nEndurance!=0 checks when (endianDiff1 & 32) != 0,
+# AND strictly match cand.nEndurance == pMaterial.nEndurance (token 0x06001e3f) so modified weapons never merge with unmodified!
 a = ILAsm()
-a.op(0x03); a.br_s(0x2c, "ret_null")
-a.op(0x03); a.tok(0x6f, 0x06001e3d); a.op(0x25); a.br_s(0x2d, "ok1"); a.op(0x26)
+a.op(0x03); a.br_s(0x2c, "ret_null") # ldarg.1; brfalse.s ret_null (3)
+a.op(0x03); a.tok(0x6f, 0x06001e3d); a.op(0x25); a.br_s(0x2c, "ret_null_pop") # ldarg.1; get_pConfig; dup; brfalse ret_null_pop (9)
+a.raw(b"\x7e" + TOK_FLAGS); a.op(0x1f, 32, 0x5f); a.br_s(0x2d, "pop_loop") # ldsfld; ldc.i4.32; and; brtrue.s pop_loop (10)
+a.op(0x25); a.tok(0x7b, 0x04003d25); a.br_s(0x2d, "ret_null_pop") # dup; bCannotCombine; brtrue ret_null_pop (9)
+a.tok(0x7b, 0x04003d26); a.br_s(0x2d, "ret_null") # nEndurance; brtrue ret_null (7)
+a.br_s(0x2b, "loop_init") # br.s loop_init (2)
+a.lbl("ret_null_pop")
+a.op(0x26) # pop [cfg] (1)
 a.lbl("ret_null")
-a.op(0x14, 0x2a)
-a.lbl("ok1")
-a.raw(b"\x7e" + TOK_FLAGS); a.op(0x1f, 32, 0x5f); a.br_s(0x2d, "pop_loop")
-a.op(0x25); a.tok(0x7b, 0x04003d25); a.br_s(0x2d, "pop_ret")
-a.tok(0x7b, 0x04003d26); a.br_s(0x2d, "ret_null")
-a.br_s(0x2b, "loop_init")
-a.lbl("pop_ret")
-a.op(0x26, 0x14, 0x2a)
+a.op(0x14, 0x2a) # ldnull; ret (2)
 a.lbl("pop_loop")
-a.op(0x26)
+a.op(0x26) # pop [cfg] (1)
 a.lbl("loop_init")
-a.tok(0x28, 0x0600214f); a.tok(0x6f, 0x06002198); a.op(0x0a, 0x16, 0x0b); a.br_s(0x2b, "cond")
+a.tok(0x28, 0x0600214f); a.tok(0x6f, 0x06002198); a.op(0x0a, 0x16, 0x0b); a.br_s(0x2b, "cond") # (15)
 a.lbl("loop")
-a.op(0x06, 0x02); a.tok(0x7b, 0x04001711); a.op(0x07); a.tok(0x6f, 0x0a00027d); a.tok(0x6f, 0x06001e54); a.op(0x0c)
-a.op(0x08); a.br_s(0x2c, "next")
-a.op(0x08); a.tok(0x6f, 0x06001e3d); a.br_s(0x2c, "next")
-a.op(0x08); a.tok(0x6f, 0x06001e3c); a.op(0x03); a.tok(0x6f, 0x06001e3c); a.br_s(0x33, "next")
-a.op(0x08, 0x2a)
+a.op(0x06, 0x02); a.tok(0x7b, 0x04001711); a.op(0x07); a.tok(0x6f, 0x0a00027d); a.tok(0x6f, 0x06001e54); a.op(0x0c) # (21)
+a.op(0x08); a.br_s(0x2c, "next") # (3)
+a.op(0x08); a.tok(0x6f, 0x06001e3c); a.op(0x03); a.tok(0x6f, 0x06001e3c); a.br_s(0x33, "next") # (14)
+# Match endurance (cand.nEndurance == pMaterial.nEndurance)
+a.op(0x08); a.tok(0x6f, 0x06001e3f); a.op(0x03); a.tok(0x6f, 0x06001e3f); a.br_s(0x33, "next") # (14)
+a.op(0x08, 0x2a) # (2)
 a.lbl("next")
-a.op(0x07, 0x17, 0x58, 0x0b)
+a.op(0x07, 0x17, 0x58, 0x0b) # (4)
 a.lbl("cond")
-a.op(0x07, 0x02); a.tok(0x7b, 0x04001711); a.tok(0x6f, 0x0a00027c); a.br_s(0x32, "loop")
-a.op(0x14, 0x2a)
+a.op(0x07, 0x02); a.tok(0x7b, 0x04001711); a.tok(0x6f, 0x0a00027c); a.br_s(0x32, "loop") # (13)
+a.op(0x14, 0x2a) # (2)
 il_merge = a.finish()
+assert len(il_merge) <= 135, f"FindMergeTarget {len(il_merge)} > 135"
 verify_il("FindMergeTarget", il_merge)
 write_il(0x9c818, il_merge, 135)
 
@@ -596,90 +598,9 @@ orig_cb[0x0060:0x0100] = blk_60 + bytes([0x00] * (160 - len(blk_60)))
 verify_il("CMainCharacter.OnInputCallback", bytes(orig_cb))
 write_il(0x198354, bytes(orig_cb), 974)
 
-# 10) CContainer.RefreshContainer (off=0x97b84, Fat hsz=12, csz=678)
-# Rewrite [0x013f..0x01b2] (115 B) keeping all external offsets (<0x013f, >=0x01b2) and EH unchanged.
-orig_rc = bytearray(buf[0x97b84 + 12 : 0x97b84 + 12 + 678])
-a = ILAsm()
-a.raw(b"\x7e" + TOK_FLAGS); a.op(0x1f, 32, 0x5f); a.br_s(0x2d, "L_merge")
-a.op(0x11, 0x0a); a.tok(0x6f, 0x06001e3d)                     # V_10.get_pConfig()
-a.op(0x25); a.tok(0x7b, 0x04003d25); a.br_s(0x2c, "L_chk_end") # dup; bCannotCombine
-a.op(0x26); a.br_s(0x2b, "L_chk_num")                          # pop; br chk_num
-a.lbl("L_chk_end")
-a.tok(0x7b, 0x04003d26); a.br_s(0x2c, "L_merge")               # nEndurance == 0 -> merge
-a.lbl("L_chk_num")
-a.op(0x11, 0x0a); a.tok(0x6f, 0x06001e3e); a.op(0x17); a.br_s(0x32, "L_exit_loop") # V_10.nNumber <= 1 -> exit
-a.op(0x16, 0x13, 0x0c); a.br_s(0x2b, "L_cond")                 # k = 0
-a.lbl("L_loop")
-a.op(0x07)                                                     # list2
-a.tok(0x28, 0x0600214f); a.tok(0x6f, 0x06002198)               # CGameSystem.Instance.materialSystem
-a.op(0x11, 0x0a); a.tok(0x6f, 0x06001e3c)                      # V_10.nConfigID
-a.op(0x17, 0x17); a.tok(0x6f, 0x06001e52)                      # CreateMaterial(cfg, 1, 1) -> V_13 (no stloc/ldloc!)
-a.tok(0x6f, 0x06001e3a); a.tok(0x6f, 0x0a00027f)               # get_UID; list2.Add(UID)
-a.op(0x11, 0x0c, 0x17, 0x58, 0x13, 0x0c)                       # k++
-a.lbl("L_cond")
-a.op(0x11, 0x0c, 0x11, 0x0a); a.tok(0x6f, 0x06001e3e); a.op(0x17, 0x59); a.br_s(0x32, "L_loop") # k < nNumber - 1
-a.op(0x11, 0x0a, 0x17, 0x16); a.tok(0x6f, 0x06001e43)          # V_10.SetNum(1, false)
-a.lbl("L_exit_loop")
-a.br_s(0x2b, "L_next_item")
-a.labels["L_merge"] = 0x01b2 - 0x013f
-a.labels["L_next_item"] = 0x020b - 0x013f
-blk_rc = a.finish()
-assert len(blk_rc) <= 0x01b2 - 0x013f, f"RefreshContainer block {len(blk_rc)} > {0x01b2 - 0x013f}"
-orig_rc[0x013f:0x01b2] = blk_rc + bytes([0x00] * ((0x01b2 - 0x013f) - len(blk_rc)))
-verify_il("CContainer.RefreshContainer", bytes(orig_rc))
-write_il(0x97b84, bytes(orig_rc), 678)
+# Patches 10 and 11 removed: CContainer.RefreshContainer and CContainerSystem.AddMaterialToContainer
+# left at vanilla logic so infinite stacking NEVER occurs in player bag, drop, or sale containers!
 
-# 11) CContainerSystem.AddMaterialToContainer(int, eContainerTypeEnum, int, int, bool) (off=0x98518, Fat hsz=12, csz=567)
-# Keeps prefix [0x0000..0x0093] intact; shifts EH clause [0x00b9..0x0115] by -4 -> [0x00b5..0x0111];
-# checks (endianDiff1 & 32) != 0 inside L_split -> jumps back to L_merge (unlimited stacking).
-orig_amc = bytearray(buf[0x98518 + 12 : 0x98518 + 12 + 567])
-a = ILAsm()
-a.raw(orig_amc[0x0000:0x0093])
-# At 0x0093 (18 B, -4 B vs orig 22 B): if ((config.bCannotCombine | config.nEndurance) != 0) goto L_split
-a.op(0x06); a.tok(0x7b, 0x04003d25)
-a.op(0x06); a.tok(0x7b, 0x04003d26); a.op(0x60)
-a.br(0x3a, "L_split")
-a.lbl("L_merge")
-eh_try_s = len(a.code) + (0x00b9 - 0x00a9) # try_off (orig 0x00b9, shifted -4 -> 0x00b5)
-a.raw(orig_amc[0x00a9:0x0115])             # complete [0x00a9..0x0115] verbatim (relative branches!)
-eh_try_e = eh_try_s + (0x0107 - 0x00b9)
-eh_hdl_e = eh_try_e + (0x0115 - 0x0107)
-a.op(0x11, 0x05); a.br_s(0x2d, "L_tips")   # if (flag2) goto L_tips
-a.op(0x08)                                 # push value2 (CContainer) BEFORE materialSystem!
-a.tok(0x28, 0x0600214f); a.tok(0x6f, 0x06002198) # materialSystem
-a.raw(orig_amc[0x0123:0x012c])             # push nMaterialConfigID, nNum, 1; CreateMaterial
-a.tok(0x6f, 0x06001e3a); a.op(0x17); a.tok(0x6f, 0x06001c04); a.op(0x26) # get_UID; true; value2.AddMaterial; pop (-4 B)
-a.br_s(0x2b, "L_tips")
-a.lbl("L_split")
-a.raw(b"\x7e" + TOK_FLAGS); a.op(0x1f, 32, 0x5f); a.br(0x3a, "L_merge") # +13 B: infStack -> L_merge
-a.op(0x16, 0x13, 0x0a); a.br_s(0x2b, "L_for_cond")
-a.lbl("L_for_body")
-a.op(0x08)                                 # push value2 (CContainer) BEFORE materialSystem!
-a.tok(0x28, 0x0600214f); a.tok(0x6f, 0x06002198) # materialSystem
-a.raw(orig_amc[0x014e:0x0156])             # push nMaterialConfigID, 1, 1; CreateMaterial
-a.tok(0x6f, 0x06001e3a); a.op(0x16); a.tok(0x6f, 0x06001c04); a.op(0x26) # get_UID; false; value2.AddMaterial; pop (-4 B)
-a.op(0x11, 0x0a, 0x17, 0x58, 0x13, 0x0a)
-a.lbl("L_for_cond")
-a.op(0x11, 0x0a, 0x0e, 0x04); a.br_s(0x32, "L_for_body")
-a.op(0x08); a.tok(0x6f, 0x06001c0a)              # value2.RefreshContainer()
-a.lbl("L_tips")
-# Copy tips [0x0179..0x01f8] verbatim (all internal short branches relative!)
-a.raw(orig_amc[0x0179:0x01f8])
-# Replace 0x01f8 (5 B: ldarg.s 5; brtrue.s +1; ret) -> 4 B: ldarg.s 5; brfalse.s L_ret (-1 B)
-a.op(0x0e, 0x05); a.br_s(0x2c, "L_ret")
-a.raw(orig_amc[0x01fd:0x0236])
-a.lbl("L_ret")
-a.op(0x2a)
-new_amc = a.finish()
-assert len(new_amc) <= 567, f"AddMaterialToContainer {len(new_amc)} > 567"
-new_amc = new_amc + bytes([0x00] * (567 - len(new_amc)))
-verify_il("CContainerSystem.AddMaterialToContainer", new_amc)
-write_il(0x98518, new_amc, 567)
-# Update EH tiny clause at (0x98518 + 12 + 567 + 3) & ~3 = 0x9875c: fl(2), TryOff(2), TryLen(1), HdlOff(2), HdlLen(1), Tok(4)
-eh_off = (0x98518 + 12 + 567 + 3) & ~3
-assert struct.unpack_from("<HHBHB", buf, eh_off + 4) == (2, 0x00b9, 0x0107 - 0x00b9, 0x0107, 0x0115 - 0x0107)
-struct.pack_into("<HBHB", buf, eh_off + 6, eh_try_s, eh_try_e - eh_try_s, eh_try_e, eh_hdl_e - eh_try_e)
-print(f"  updated EH tiny clause at {eh_off:#x}: try=[{eh_try_s:#x}..{eh_try_e:#x}] hdl=[{eh_try_e:#x}..{eh_hdl_e:#x}]")
 
 open(DEC_OUT, "wb").write(buf)
 os.makedirs(os.path.dirname(NHTP_OUT), exist_ok=True)

@@ -162,13 +162,14 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
         // Snapshot JSON
         std::string j;
         j.reserve(4096);
-        char head[768];
+        char head[896];
         uint32_t fl = shm->flags;
         uint32_t mgR = shm->mgRateX10 ? shm->mgRateX10 : 100u;
         std::string stEsc = json_escape(shm->lastStatus);
         snprintf(head, sizeof(head),
                  "{\"ready\":%u,\"scene\":%d,\"cid\":%d,\"flags\":%u,"
                  "\"ac\":%d,\"ammo\":%d,\"end\":%d,\"paid\":%d,\"inst\":%d,\"infStk\":%d,\"noclip\":%d,\"mg\":%d,"
+                 "\"sewer\":%d,\"event\":%d,\"phono\":%d,"
                  "\"mgRate\":%u,\"dynSeq\":%u,\"tick\":%u,\"cmdRes\":%d,"
                  "\"okCnt\":%u,\"failCnt\":%u,\"lastFailId\":%d,\"pending\":%zu,\"status\":\"%s\",",
                  shm->bridgeReady, shm->sceneReady, shm->currentCid, fl,
@@ -180,6 +181,9 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
                  (fl & MOD_FLAG_INF_STACK_WAREHOUSE) ? 1 : 0,
                  (fl & MOD_FLAG_NOCLIP) ? 1 : 0,
                  (fl & MOD_FLAG_MACHINE_GUN) ? 1 : 0,
+                 (fl & MOD_FLAG_SEWER_HIGHLIGHT) ? 1 : 0,
+                 (fl & MOD_FLAG_ALWAYS_EVENT) ? 1 : 0,
+                 (fl & MOD_FLAG_PHONOGRAPH_LOCAL) ? 1 : 0,
                  mgR, shm->dynSeq,
                  shm->tickCount, shm->lastCmdResult,
                  shm->cmdOkCount, shm->cmdFailCount, shm->lastFailArg1, pending, stEsc.c_str());
@@ -301,6 +305,12 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
             ares::il2cpp::mod_set_flag(MOD_FLAG_NOCLIP, on);
         } else if (a1 == 7) {
             ares::il2cpp::mod_set_flag(MOD_FLAG_MACHINE_GUN, on);
+        } else if (a1 == 8) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_SEWER_HIGHLIGHT, on);
+        } else if (a1 == 9) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_ALWAYS_EVENT, on);
+        } else if (a1 == 10) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_PHONOGRAPH_LOCAL, on);
         }
         return env->NewStringUTF("1");
     }
@@ -327,6 +337,16 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
         snprintf(out, sizeof(out), "{\"pending\":%zu,\"okCnt\":%u,\"failCnt\":%u,\"lastFailId\":%d}",
                  pending, shm->cmdOkCount, shm->cmdFailCount, shm->lastFailArg1);
         return env->NewStringUTF(out);
+    }
+    if (op == 15) {
+        // Delete warehouse item: a1=count, a2=boxInstanceId, aL=materialUID
+        bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_DEL_WAREHOUSE_ITEM, a1, a2, 0, (int64_t) aL);
+        return env->NewStringUTF(ok ? "1" : "0");
+    }
+    if (op == 16) {
+        // Set currency: a1=type(0=Diamond,1=GardenCoin,2=GardenPoint,3=CumulativePay), a2=val
+        bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_SET_CURRENCY, a1, a2, 0, 0);
+        return env->NewStringUTF(ok ? "1" : "0");
     }
     return env->NewStringUTF("{}");
 }

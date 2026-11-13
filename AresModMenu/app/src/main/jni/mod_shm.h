@@ -22,6 +22,9 @@ enum : uint32_t {
     MOD_FLAG_INF_STACK_WAREHOUSE = 1u << 5,
     MOD_FLAG_NOCLIP              = 1u << 6,
     MOD_FLAG_MACHINE_GUN         = 1u << 7,
+    MOD_FLAG_SEWER_HIGHLIGHT     = 1u << 8,
+    MOD_FLAG_ALWAYS_EVENT        = 1u << 9,
+    MOD_FLAG_PHONOGRAPH_LOCAL    = 1u << 10,
 };
 
 enum : int32_t {
@@ -36,6 +39,8 @@ enum : int32_t {
     MOD_CMD_CLEAR_PROP_LOCKS   = 8,  /* clear all locked properties */
     MOD_CMD_UNLOCK_ALL_PAID    = 9,  /* sync/apply or restore all local paid unlocks */
     MOD_CMD_SYNC_DYN_ASSETS    = 10, /* export runtime dyn_items.json, dyn_buffs.json & missing icons */
+    MOD_CMD_DEL_WAREHOUSE_ITEM = 11, /* arg1=count, arg2=boxInstanceId, argL=materialUID */
+    MOD_CMD_SET_CURRENCY       = 12, /* arg1=type(0=Diamond,1=GardenCoin,2=GardenPoint,3=CumulativePay), arg2=val */
 };
 
 struct ModCmd {

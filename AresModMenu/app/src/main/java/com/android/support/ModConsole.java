@@ -309,8 +309,8 @@ public final class ModConsole {
     private TextView tvTitle, tvLivePill, tvDiagText, tvOtherStatus, tvMgRateVal;
     private Button btnHideTop, btnMinTop;
 
-    // 6 sidebar tabs: Items / Props / Buffs / OtherFeatures / Themes / Settings
-    private static final int TAB_COUNT = 6;
+    // 8 sidebar tabs: Items / WarehouseDelete / Currency / Props / Buffs / OtherFeatures / Themes / Settings
+    private static final int TAB_COUNT = 8;
     private final FrameLayout[] pages = new FrameLayout[TAB_COUNT];
     private final LinearLayout[] sideBtns = new LinearLayout[TAB_COUNT];
     private final View[] sideBars = new View[TAB_COUNT];
@@ -326,11 +326,43 @@ public final class ModConsole {
     private boolean flagInfStack = false;
     private boolean flagNoclip = false;
     private boolean flagMG = false;
+    private boolean flagSewer = false;
+    private boolean flagEvent = false;
+    private boolean flagPhono = false;
     private int mgRateX10 = 100; // default 10.0 shots/s
 
-    // Other-Features cards & status pills for theme/state refresh
-    private LinearLayout cardAC, cardAmmo, cardEndur, cardPaid, cardInst, cardInfStk, cardNoclip, cardMG, cardBp, cardAutoProps;
-    private TextView tvACState, tvAmmoState, tvEndurState, tvPaidState, tvInstState, tvInfStkState, tvNoclipState, tvMGState, tvAutoPropState;
+    // Other-Features switch widgets & cardMG
+    private Switch swAC, swAmmo, swEndur, swInstant, swInfStack, swNoclip, swSewer, swEvent, swPhono, swPaid, swAutoProps, swMG;
+    private LinearLayout cardMG;
+    private TextView tvMGState;
+    private final List<View> otherFeatureRows = new ArrayList<View>();
+    private final List<TextView> otherFeatureTitles = new ArrayList<TextView>();
+    private final List<TextView> otherFeatureSubs = new ArrayList<TextView>();
+
+    // Warehouse Item Model & Modal
+    private static class WarehouseItem {
+        long boxId;
+        long uid;
+        int id;
+        String name;
+        int num;
+        int end;
+        String icon;
+    }
+    private FrameLayout delModalOverlay;
+    private LinearLayout delModalCard;
+    private ImageView delModalIcon;
+    private TextView delModalTitle, delModalSub;
+    private EditText etDelModalNum;
+    private Button btnDelModalConfirm, btnDelModalCancel;
+    private WarehouseItem delModalItem;
+    private Runnable delModalOnConfirm;
+
+    // Currency values & hooks
+    private final int[] liveCurrency = new int[4];
+    private final TextView[] tvCurrencyVals = new TextView[4];
+    private Runnable warehouseRefreshHook = null;
+    private Runnable currencyRefreshHook = null;
     private final LinearLayout[] themeCards = new LinearLayout[THEMES.length];
     private final TextView[] themeBadges = new TextView[THEMES.length];
     private LinearLayout diagCard, prefCard;
@@ -384,6 +416,9 @@ public final class ModConsole {
         this.flagInfStack = Preferences.loadPrefBool("无限堆叠(仓库)", 72, false);
         this.flagNoclip = Preferences.loadPrefBool("穿墙模式", 73, false);
         this.flagMG = Preferences.loadPrefBool("机关枪模式", 74, false);
+        this.flagSewer = Preferences.loadPrefBool("下水道高亮", 81, false);
+        this.flagEvent = Preferences.loadPrefBool("限时活动开放", 82, false);
+        this.flagPhono = Preferences.loadPrefBool("留声机播放本地音乐", 83, false);
         int savedRate = Preferences.loadPrefInt("机关枪连发速度", 75);
         this.mgRateX10 = (savedRate >= 10 && savedRate <= 600) ? savedRate : modPrefs.getInt("mg_rate_x10", 100);
         if (this.mgRateX10 < 10 || this.mgRateX10 > 600) this.mgRateX10 = 100;
@@ -924,7 +959,7 @@ public final class ModConsole {
         body.addView(sidebarView);
 
         String[] tabTitles = new String[] {
-            "🎒 物品发放", "📊 全部属性", "✨ Buff施加", "🛠️ 其他功能", "🎨 主题风格", "⚙️ 诊断设置"
+            "🎒 物品发放", "🗑️ 物品删除", "💎 货币修改", "📊 全部属性", "✨ Buff施加", "🛠️ 其他功能", "🎨 主题风格", "⚙️ 诊断设置"
         };
         for (int i = 0; i < tabTitles.length; i++) {
             final int tIdx = i;
@@ -968,11 +1003,13 @@ public final class ModConsole {
 
         int availContentW = panelW - sideW - dp(18);
         pages[0] = buildItemsPage(availContentW);
-        pages[1] = buildPropsPage();
-        pages[2] = buildBuffsPage();
-        pages[3] = buildOtherFeaturesPage();
-        pages[4] = buildThemesPage();
-        pages[5] = buildSettingsPage();
+        pages[1] = buildWarehouseDeletePage(availContentW);
+        pages[2] = buildCurrencyPage();
+        pages[3] = buildPropsPage();
+        pages[4] = buildBuffsPage();
+        pages[5] = buildOtherFeaturesPage();
+        pages[6] = buildThemesPage();
+        pages[7] = buildSettingsPage();
 
         for (int i = 0; i < pages.length; i++) {
             pages[i].setVisibility(i == 0 ? View.VISIBLE : View.GONE);
@@ -981,6 +1018,8 @@ public final class ModConsole {
 
         buildItemDetailModal();
         backdropView.addView(detailModalOverlay);
+        buildWarehouseDeleteModal();
+        backdropView.addView(delModalOverlay);
 
         applyTheme(curThemeIdx, false);
         switchTab(0);
@@ -1167,7 +1206,9 @@ public final class ModConsole {
         }
         syncTabButtonsTheme();
         if (idx == 0 && itemBoxesRefreshHook != null) itemBoxesRefreshHook.run();
-        if (idx == 1) {
+        if (idx == 1 && warehouseRefreshHook != null) warehouseRefreshHook.run();
+        if (idx == 2 && currencyRefreshHook != null) currencyRefreshHook.run();
+        if (idx == 3) {
             Menu.NativeQuery(9, 0, 0, 0L, "");
             mainH.postDelayed(new Runnable() {
                 @Override public void run() {
@@ -1176,7 +1217,7 @@ public final class ModConsole {
                 }
             }, 120);
         }
-        if (idx == 2 && buffActiveRefreshHook != null) buffActiveRefreshHook.run();
+        if (idx == 4 && buffActiveRefreshHook != null) buffActiveRefreshHook.run();
     }
 
     private void startPoll() {
@@ -1249,6 +1290,9 @@ public final class ModConsole {
                 flagInfStack = obj.optInt("infStk", 0) != 0;
                 flagNoclip = obj.optInt("noclip", 0) != 0;
                 flagMG = obj.optInt("mg", 0) != 0;
+                flagSewer = obj.optInt("sewer", 0) != 0;
+                flagEvent = obj.optInt("event", 0) != 0;
+                flagPhono = obj.optInt("phono", 0) != 0;
             }
             syncToggleCardStyles();
 
@@ -1366,42 +1410,37 @@ public final class ModConsole {
         Menu.NativeQuery(10, 5, flagInfStack ? 1 : 0, 0L, "");
         Menu.NativeQuery(10, 6, flagNoclip ? 1 : 0, 0L, "");
         Menu.NativeQuery(10, 7, flagMG ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 8, flagSewer ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 9, flagEvent ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 10, flagPhono ? 1 : 0, 0L, "");
         Menu.NativeQuery(11, mgRateX10, 0, 0L, "");
     }
 
-    private void styleToggleCard(LinearLayout card, TextView pill, boolean on, String onTxt, String offTxt, boolean warnWhenOff) {
-        if (card == null) return;
-        card.setBackground(makeRoundBox(on ? curTheme.cardOnBg : curTheme.cardBg, on ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
-        if (card.getChildCount() > 0 && card.getChildAt(0) instanceof TextView) {
-            ((TextView) card.getChildAt(0)).setTextColor(curTheme.textPri);
-        }
-        if (card.getChildCount() > 1 && card.getChildAt(1) instanceof TextView) {
-            ((TextView) card.getChildAt(1)).setTextColor(curTheme.textSec);
-        }
-        if (pill != null) {
-            pill.setText(on ? onTxt : offTxt);
-            pill.setTextColor(on ? curTheme.emerald : (warnWhenOff ? curTheme.danger : curTheme.textSec));
+    private void safeSetChecked(Switch sw, boolean checked) {
+        if (sw != null && sw.isChecked() != checked) {
+            sw.setChecked(checked);
         }
     }
 
     private void syncToggleCardStyles() {
-        styleToggleCard(cardAC, tvACState, flagAC, "● 已全拦截 (安全)", "○ 已关闭", true);
-        styleToggleCard(cardAmmo, tvAmmoState, flagAmmo, "● 已开启 (+1)", "○ 未开启", false);
-        styleToggleCard(cardEndur, tvEndurState, flagEndur, "● 已锁定满耐久", "○ 未开启", false);
-        styleToggleCard(cardPaid, tvPaidState, flagPaid, "● 已本地解锁", "○ 点击开启解锁", false);
-        styleToggleCard(cardInst, tvInstState, flagInstant, "● 0秒瞬时交互", "○ 原版耗时", false);
-        styleToggleCard(cardInfStk, tvInfStkState, flagInfStack, "● 仓库无限堆叠", "○ 原版堆叠", false);
-        styleToggleCard(cardNoclip, tvNoclipState, flagNoclip, "● 穿墙已开启", "○ 正常碰撞", false);
-        styleToggleCard(cardMG, tvMGState, flagMG, "● 机关枪生效中", "○ 未开启", false);
-        styleToggleCard(cardAutoProps, tvAutoPropState, flagAutoProps && !savedPropVals.isEmpty(),
-                "● 自动加载(" + savedPropVals.size() + "项)",
-                savedPropVals.isEmpty() ? "○ 未保存配置" : "○ 自动加载关(" + savedPropVals.size() + "项)", false);
-        if (cardBp != null) {
-            cardBp.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(10)));
-            if (cardBp.getChildCount() > 0 && cardBp.getChildAt(0) instanceof TextView)
-                ((TextView) cardBp.getChildAt(0)).setTextColor(curTheme.textPri);
-            if (cardBp.getChildCount() > 1 && cardBp.getChildAt(1) instanceof TextView)
-                ((TextView) cardBp.getChildAt(1)).setTextColor(curTheme.textSec);
+        safeSetChecked(swAC, flagAC);
+        safeSetChecked(swAmmo, flagAmmo);
+        safeSetChecked(swEndur, flagEndur);
+        safeSetChecked(swInstant, flagInstant);
+        safeSetChecked(swInfStack, flagInfStack);
+        safeSetChecked(swNoclip, flagNoclip);
+        safeSetChecked(swSewer, flagSewer);
+        safeSetChecked(swEvent, flagEvent);
+        safeSetChecked(swPhono, flagPhono);
+        safeSetChecked(swPaid, flagPaid);
+        safeSetChecked(swAutoProps, flagAutoProps && !savedPropVals.isEmpty());
+        safeSetChecked(swMG, flagMG);
+        if (cardMG != null) {
+            cardMG.setBackground(makeRoundBox(flagMG ? curTheme.cardOnBg : curTheme.cardBg, flagMG ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+        }
+        if (tvMGState != null) {
+            tvMGState.setText(flagMG ? "● 机关枪生效中" : "○ 未开启");
+            tvMGState.setTextColor(flagMG ? curTheme.emerald : curTheme.textSec);
         }
     }
 
@@ -1946,9 +1985,25 @@ public final class ModConsole {
         final Button btnRefresh = makePillBtn("刷新实时值", curTheme.btnBlue, 30);
         final Button btnUnlockAll = makePillBtn("解全部锁", curTheme.btnSlate, 30);
         final Button btnApplyAll = makePillBtn("批量应用修改", curTheme.btnGreen, 30);
+        final Button btnSaveCfg = makePillBtn("保存配置", curTheme.btnGreen, 30);
+        final Button btnClearCfg = makePillBtn("删除已存配置", curTheme.btnRed, 30);
+        btnSaveCfg.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                saveCurrentPropsConfig();
+                Toast.makeText(ctx, "已保存当前 " + savedPropVals.size() + " 项属性配置", Toast.LENGTH_SHORT).show();
+            }
+        });
+        btnClearCfg.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                clearSavedPropsConfig();
+                Toast.makeText(ctx, "已删除当前保存的属性配置", Toast.LENGTH_SHORT).show();
+            }
+        });
         top.addView(btnRefresh);
         top.addView(btnUnlockAll);
         top.addView(btnApplyAll);
+        top.addView(btnSaveCfg);
+        top.addView(btnClearCfg);
         root.addView(top);
 
         HorizontalScrollView hsGrp = new HorizontalScrollView(ctx);
@@ -2238,6 +2293,8 @@ public final class ModConsole {
                 btnRefresh.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
                 btnUnlockAll.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
                 btnApplyAll.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+                btnSaveCfg.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+                btnClearCfg.setBackground(makeRoundBox(curTheme.btnRed, 0x33FFFFFF, 1, dp(7)));
                 for (int j = 0; j < grpIds.length; j++) {
                     grpBtns.get(j).setBackground(makeRoundBox(grpIds[j] == curGrp[0] ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
                 }
@@ -2587,8 +2644,732 @@ public final class ModConsole {
     }
 
     // =========================================================================
-    //  TAB 3: 其他功能 (全开关 + 蓝图/付费全解锁 + 交互/堆叠/穿墙/机关枪)
+    //  TAB 1: 仓库物品删除 (实时扫描 dyn_warehouse.json + 箱子筛选 + 弹窗精细删除)
     // =========================================================================
+    private List<WarehouseItem> loadWarehouseItems() {
+        List<WarehouseItem> list = new ArrayList<WarehouseItem>();
+        try {
+            File f = new File(ctx.getFilesDir(), "dyn_warehouse.json");
+            String raw = readFileText(f);
+            if (raw != null && raw.startsWith("[")) {
+                JSONArray arr = new JSONArray(raw);
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject o = arr.getJSONObject(i);
+                    WarehouseItem wi = new WarehouseItem();
+                    wi.boxId = o.optLong("boxId");
+                    wi.uid = o.optLong("uid");
+                    wi.id = o.optInt("id");
+                    wi.name = o.optString("name", "未知物品");
+                    wi.num = o.optInt("num", 1);
+                    wi.end = o.optInt("end", 0);
+                    wi.icon = o.optString("icon", "");
+                    list.add(wi);
+                }
+            }
+        } catch (Throwable ignored) {}
+        return list;
+    }
+
+    private void buildWarehouseDeleteModal() {
+        delModalOverlay = new FrameLayout(ctx);
+        delModalOverlay.setBackgroundColor(0x88000000);
+        delModalOverlay.setVisibility(View.GONE);
+        delModalOverlay.setClickable(true);
+        delModalOverlay.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        delModalOverlay.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { delModalOverlay.setVisibility(View.GONE); }
+        });
+
+        delModalCard = new LinearLayout(ctx);
+        delModalCard.setOrientation(LinearLayout.VERTICAL);
+        delModalCard.setClickable(true);
+        delModalCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        FrameLayout.LayoutParams mLp = new FrameLayout.LayoutParams(dp(400), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+        delModalOverlay.addView(delModalCard, mLp);
+
+        LinearLayout top = new LinearLayout(ctx);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        delModalIcon = new ImageView(ctx);
+        LinearLayout.LayoutParams iLp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        iLp.setMargins(0, 0, dp(10), 0);
+        top.addView(delModalIcon, iLp);
+
+        LinearLayout hdrInfo = new LinearLayout(ctx);
+        hdrInfo.setOrientation(LinearLayout.VERTICAL);
+        hdrInfo.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        delModalTitle = new TextView(ctx);
+        delModalTitle.setTextSize(14.5f);
+        delModalTitle.setTypeface(null, Typeface.BOLD);
+        hdrInfo.addView(delModalTitle);
+        delModalSub = new TextView(ctx);
+        delModalSub.setTextSize(11);
+        delModalSub.setPadding(0, dp(2), 0, 0);
+        hdrInfo.addView(delModalSub);
+        top.addView(hdrInfo);
+        delModalCard.addView(top);
+
+        // Stepper row
+        LinearLayout stepRow = new LinearLayout(ctx);
+        stepRow.setOrientation(LinearLayout.HORIZONTAL);
+        stepRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        stLp.setMargins(0, dp(12), 0, dp(12));
+
+        TextView tvDelLbl = new TextView(ctx);
+        tvDelLbl.setText("删除数量: ");
+        tvDelLbl.setTextSize(12);
+        tvDelLbl.setTextColor(curTheme.textPri);
+        stepRow.addView(tvDelLbl);
+
+        final Button btnSub10 = makePillBtn("-10", curTheme.btnSlate, 28);
+        final Button btnSub1 = makePillBtn("-1", curTheme.btnSlate, 28);
+        etDelModalNum = makeDarkEdit("数量", true);
+        etDelModalNum.setText("1");
+        etDelModalNum.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams etLp = new LinearLayout.LayoutParams(dp(65), dp(30));
+        etLp.setMargins(dp(3), 0, dp(3), 0);
+        final Button btnAdd1 = makePillBtn("+1", curTheme.btnSlate, 28);
+        final Button btnAdd10 = makePillBtn("+10", curTheme.btnSlate, 28);
+        final Button btnAll = makePillBtn("全部", curTheme.btnBlue, 28);
+
+        btnSub10.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (delModalItem == null) return;
+                int cur = 1;
+                try { cur = Integer.parseInt(etDelModalNum.getText().toString().trim()); } catch (Throwable ignored) {}
+                etDelModalNum.setText(String.valueOf(Math.max(1, cur - 10)));
+            }
+        });
+        btnSub1.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (delModalItem == null) return;
+                int cur = 1;
+                try { cur = Integer.parseInt(etDelModalNum.getText().toString().trim()); } catch (Throwable ignored) {}
+                etDelModalNum.setText(String.valueOf(Math.max(1, cur - 1)));
+            }
+        });
+        btnAdd1.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (delModalItem == null) return;
+                int cur = 1;
+                try { cur = Integer.parseInt(etDelModalNum.getText().toString().trim()); } catch (Throwable ignored) {}
+                etDelModalNum.setText(String.valueOf(Math.min(delModalItem.num, cur + 1)));
+            }
+        });
+        btnAdd10.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (delModalItem == null) return;
+                int cur = 1;
+                try { cur = Integer.parseInt(etDelModalNum.getText().toString().trim()); } catch (Throwable ignored) {}
+                etDelModalNum.setText(String.valueOf(Math.min(delModalItem.num, cur + 10)));
+            }
+        });
+        btnAll.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (delModalItem == null) return;
+                etDelModalNum.setText(String.valueOf(delModalItem.num));
+            }
+        });
+
+        stepRow.addView(btnSub10);
+        stepRow.addView(btnSub1);
+        stepRow.addView(etDelModalNum, etLp);
+        stepRow.addView(btnAdd1);
+        stepRow.addView(btnAdd10);
+        stepRow.addView(btnAll);
+        delModalCard.addView(stepRow, stLp);
+
+        // Action buttons
+        LinearLayout bot = new LinearLayout(ctx);
+        bot.setOrientation(LinearLayout.HORIZONTAL);
+        bot.setGravity(Gravity.END);
+
+        btnDelModalCancel = makePillBtn("取消", curTheme.btnSlate, 30);
+        btnDelModalConfirm = makePillBtn("确认删除", curTheme.btnRed, 30);
+
+        btnDelModalCancel.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { delModalOverlay.setVisibility(View.GONE); }
+        });
+        btnDelModalConfirm.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (delModalItem == null) return;
+                int count = 1;
+                try { count = Integer.parseInt(etDelModalNum.getText().toString().trim()); } catch (Throwable ignored) {}
+                if (count <= 0) count = 1;
+                if (count > delModalItem.num) count = delModalItem.num;
+                Menu.NativeQuery(15, count, (int) delModalItem.boxId, delModalItem.uid, "");
+                Toast.makeText(ctx, "已删除 " + count + " 个 " + delModalItem.name, Toast.LENGTH_SHORT).show();
+                delModalOverlay.setVisibility(View.GONE);
+                if (delModalOnConfirm != null) delModalOnConfirm.run();
+            }
+        });
+
+        bot.addView(btnDelModalCancel);
+        bot.addView(btnDelModalConfirm);
+        delModalCard.addView(bot);
+    }
+
+    private void showWarehouseDeleteModal(final WarehouseItem item, final Runnable onConfirm) {
+        delModalItem = item;
+        delModalOnConfirm = onConfirm;
+        delModalCard.setBackground(makeRoundBox(curTheme.panelBg, curTheme.accent, dp(2), dp(14)));
+        delModalTitle.setText(item.name + "   #" + item.id);
+        delModalTitle.setTextColor(curTheme.textPri);
+        String sub = "箱子 #" + item.boxId + " · 当前存量: " + item.num;
+        if (item.end > 0) sub += " · 耐久 " + item.end;
+        delModalSub.setText(sub);
+        delModalSub.setTextColor(curTheme.accent);
+
+        etDelModalNum.setText(String.valueOf(item.num));
+        Bitmap bmp = getIconSync(ctx, item.icon);
+        if (bmp != null) delModalIcon.setImageBitmap(bmp);
+        else delModalIcon.setImageDrawable(null);
+
+        delModalOverlay.setVisibility(View.VISIBLE);
+    }
+
+    private FrameLayout buildWarehouseDeletePage(int availContentW) {
+        final FrameLayout wrap = new FrameLayout(ctx);
+        LinearLayout root = new LinearLayout(ctx);
+        root.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(root, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        final List<WarehouseItem> allItems = new ArrayList<WarehouseItem>();
+        final List<WarehouseItem> filtered = new ArrayList<WarehouseItem>();
+        final long[] selectedBoxId = new long[] { -1L };
+        final String[] searchKey = new String[] { "" };
+        final List<Long> boxList = new ArrayList<Long>();
+
+        // Top bar: Search + Refresh
+        LinearLayout top = new LinearLayout(ctx);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        final EditText etSearch = makeDarkEdit("🔍 搜索仓库物品名称 / ID...", false);
+        etSearch.setLayoutParams(new LinearLayout.LayoutParams(0, dp(30), 1f));
+        final Button btnRef = makePillBtn("🔄 刷新仓库", curTheme.btnBlue, 30);
+        top.addView(etSearch);
+        top.addView(btnRef);
+        root.addView(top);
+
+        // Filter pills for boxes
+        final HorizontalScrollView hsBoxes = new HorizontalScrollView(ctx);
+        hsBoxes.setHorizontalScrollBarEnabled(false);
+        final LinearLayout rowBoxes = new LinearLayout(ctx);
+        rowBoxes.setOrientation(LinearLayout.HORIZONTAL);
+        hsBoxes.addView(rowBoxes);
+        LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(28));
+        bLp.setMargins(0, dp(3), 0, dp(3));
+        root.addView(hsBoxes, bLp);
+
+        final TextView tvSummary = new TextView(ctx);
+        tvSummary.setTextSize(10.5f);
+        tvSummary.setTextColor(curTheme.textSec);
+        tvSummary.setPadding(dp(4), 0, dp(4), dp(2));
+        root.addView(tvSummary);
+
+        // 2-column ListView
+        final ListView lv = new ListView(ctx);
+        lv.setDivider(null);
+        lv.setDividerHeight(0);
+        lv.setScrollingCacheEnabled(false);
+        lv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(lv);
+
+        final class WhCellHolder {
+            LinearLayout card;
+            ImageView iv;
+            TextView tvName, tvInfo, tvNum;
+            Button btnDel;
+            WarehouseItem boundItem;
+        }
+        final class WhRowHolder {
+            WhCellHolder left, right;
+        }
+
+        final BaseAdapter adapter = new BaseAdapter() {
+            @Override public int getCount() { return (filtered.size() + 1) / 2; }
+            @Override public Object getItem(int pos) { return pos; }
+            @Override public long getItemId(int pos) { return pos; }
+
+            private WhCellHolder makeCell() {
+                final WhCellHolder h = new WhCellHolder();
+                LinearLayout c = new LinearLayout(ctx);
+                c.setOrientation(LinearLayout.HORIZONTAL);
+                c.setGravity(Gravity.CENTER_VERTICAL);
+                c.setPadding(dp(8), dp(5), dp(8), dp(5));
+
+                h.iv = new ImageView(ctx);
+                LinearLayout.LayoutParams ivLp = new LinearLayout.LayoutParams(dp(38), dp(38));
+                ivLp.setMargins(0, 0, dp(8), 0);
+                c.addView(h.iv, ivLp);
+
+                LinearLayout mid = new LinearLayout(ctx);
+                mid.setOrientation(LinearLayout.VERTICAL);
+                mid.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                h.tvName = new TextView(ctx);
+                h.tvName.setTextSize(11.5f);
+                h.tvName.setTypeface(null, Typeface.BOLD);
+                h.tvName.setSingleLine(true);
+                h.tvName.setEllipsize(TextUtils.TruncateAt.END);
+                mid.addView(h.tvName);
+
+                h.tvInfo = new TextView(ctx);
+                h.tvInfo.setTextSize(9.5f);
+                h.tvInfo.setSingleLine(true);
+                mid.addView(h.tvInfo);
+                c.addView(mid);
+
+                LinearLayout rightCol = new LinearLayout(ctx);
+                rightCol.setOrientation(LinearLayout.VERTICAL);
+                rightCol.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+
+                h.tvNum = new TextView(ctx);
+                h.tvNum.setTextSize(11.5f);
+                h.tvNum.setTypeface(null, Typeface.BOLD);
+                h.tvNum.setTextColor(curTheme.emerald);
+                rightCol.addView(h.tvNum);
+
+                h.btnDel = makePillBtn("删除", curTheme.btnRed, 22);
+                h.btnDel.setTextSize(9.5f);
+                rightCol.addView(h.btnDel);
+                c.addView(rightCol);
+
+                h.card = c;
+                return h;
+            }
+
+            private void bindCell(final WhCellHolder h, final WarehouseItem it) {
+                h.boundItem = it;
+                if (it == null) {
+                    h.card.setVisibility(View.INVISIBLE);
+                    return;
+                }
+                h.card.setVisibility(View.VISIBLE);
+                h.card.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
+                h.tvName.setText(it.name);
+                h.tvName.setTextColor(curTheme.textPri);
+                String sub = "箱子#" + it.boxId + " · ID:" + it.id;
+                if (it.end > 0) sub += " · 耐久" + it.end;
+                h.tvInfo.setText(sub);
+                h.tvInfo.setTextColor(curTheme.textSec);
+                h.tvNum.setText("x" + it.num);
+                bindIconAsync(h.iv, it.icon, curTheme.inputBg);
+
+                View.OnClickListener onDelClick = new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        showWarehouseDeleteModal(it, new Runnable() {
+                            @Override public void run() {
+                                mainH.postDelayed(new Runnable() {
+                                    @Override public void run() {
+                                        if (warehouseRefreshHook != null) warehouseRefreshHook.run();
+                                    }
+                                }, 150);
+                            }
+                        });
+                    }
+                };
+                h.card.setOnClickListener(onDelClick);
+                h.btnDel.setOnClickListener(onDelClick);
+            }
+
+            @Override public View getView(int pos, View cv, ViewGroup p) {
+                WhRowHolder rh;
+                if (cv == null) {
+                    LinearLayout row = new LinearLayout(ctx);
+                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    row.setPadding(0, dp(2), 0, dp(2));
+                    rh = new WhRowHolder();
+                    rh.left = makeCell();
+                    rh.right = makeCell();
+                    LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+                    cLp.setMargins(dp(2), 0, dp(2), 0);
+                    row.addView(rh.left.card, cLp);
+                    row.addView(rh.right.card, cLp);
+                    row.setTag(rh);
+                    cv = row;
+                } else {
+                    rh = (WhRowHolder) cv.getTag();
+                }
+                int lIdx = pos * 2;
+                int rIdx = lIdx + 1;
+                bindCell(rh.left, lIdx < filtered.size() ? filtered.get(lIdx) : null);
+                bindCell(rh.right, rIdx < filtered.size() ? filtered.get(rIdx) : null);
+                return cv;
+            }
+        };
+        lv.setAdapter(adapter);
+
+        final Runnable applyFilter = new Runnable() {
+            @Override public void run() {
+                filtered.clear();
+                String q = searchKey[0].trim().toLowerCase(Locale.US);
+                long bId = selectedBoxId[0];
+                for (WarehouseItem wi : allItems) {
+                    if (bId != -1L && wi.boxId != bId) continue;
+                    if (!q.isEmpty()) {
+                        String nameL = (wi.name != null) ? wi.name.toLowerCase(Locale.US) : "";
+                        String idStr = String.valueOf(wi.id);
+                        if (!nameL.contains(q) && !idStr.contains(q)) continue;
+                    }
+                    filtered.add(wi);
+                }
+                tvSummary.setText("共检测到 " + allItems.size() + " 项，当前筛选显示 " + filtered.size() + " 项");
+                adapter.notifyDataSetChanged();
+            }
+        };
+
+        final Runnable rebuildBoxPills = new Runnable() {
+            @Override public void run() {
+                rowBoxes.removeAllViews();
+                boxList.clear();
+                HashSet<Long> seen = new HashSet<Long>();
+                for (WarehouseItem wi : allItems) {
+                    if (seen.add(wi.boxId)) boxList.add(wi.boxId);
+                }
+                // All boxes button
+                final Button btnAllBoxes = makePillBtn("全部箱子 (" + allItems.size() + ")", selectedBoxId[0] == -1L ? curTheme.btnBlue : curTheme.btnSlate, 26);
+                btnAllBoxes.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        selectedBoxId[0] = -1L;
+                        applyFilter.run();
+                        for (int k = 0; k < rowBoxes.getChildCount(); k++) {
+                            View c = rowBoxes.getChildAt(k);
+                            if (c instanceof Button) {
+                                boolean active = (k == 0);
+                                c.setBackground(makeRoundBox(active ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                            }
+                        }
+                    }
+                });
+                rowBoxes.addView(btnAllBoxes);
+
+                for (final Long bId : boxList) {
+                    int bCnt = 0;
+                    for (WarehouseItem wi : allItems) if (wi.boxId == bId) bCnt++;
+                    Button bBtn = makePillBtn("箱子 #" + bId + " (" + bCnt + ")", selectedBoxId[0] == bId ? curTheme.btnBlue : curTheme.btnSlate, 26);
+                    bBtn.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            selectedBoxId[0] = bId;
+                            applyFilter.run();
+                            for (int k = 0; k < rowBoxes.getChildCount(); k++) {
+                                View c = rowBoxes.getChildAt(k);
+                                if (c instanceof Button) {
+                                    boolean active = (k > 0 && boxList.get(k - 1) == selectedBoxId[0]);
+                                    c.setBackground(makeRoundBox(active ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                                }
+                            }
+                        }
+                    });
+                    rowBoxes.addView(bBtn);
+                }
+            }
+        };
+
+        warehouseRefreshHook = new Runnable() {
+            @Override public void run() {
+                sBgExec.execute(new Runnable() {
+                    @Override public void run() {
+                        final List<WarehouseItem> items = loadWarehouseItems();
+                        mainH.post(new Runnable() {
+                            @Override public void run() {
+                                allItems.clear();
+                                allItems.addAll(items);
+                                rebuildBoxPills.run();
+                                applyFilter.run();
+                            }
+                        });
+                    }
+                });
+            }
+        };
+
+        btnRef.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(9, 0, 0, 0L, "");
+                Toast.makeText(ctx, "正在扫描仓库物品...", Toast.LENGTH_SHORT).show();
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        if (warehouseRefreshHook != null) warehouseRefreshHook.run();
+                    }
+                }, 200);
+            }
+        });
+
+        etSearch.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                searchKey[0] = (s != null) ? s.toString() : "";
+                applyFilter.run();
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
+        themeRefreshHooks.add(new Runnable() {
+            @Override public void run() {
+                btnRef.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
+                styleEditBox(etSearch);
+                rebuildBoxPills.run();
+                adapter.notifyDataSetChanged();
+            }
+        });
+
+        return wrap;
+    }
+
+    // =========================================================================
+    //  TAB 2: 货币修改 (原生 CPaySystem: 钻石 / 游园币 / 游园积分 / 累计充值)
+    // =========================================================================
+    private FrameLayout buildCurrencyPage() {
+        final FrameLayout wrap = new FrameLayout(ctx);
+        ScrollView sv = new ScrollView(ctx);
+        sv.setVerticalScrollBarEnabled(true);
+        final LinearLayout col = new LinearLayout(ctx);
+        col.setOrientation(LinearLayout.VERTICAL);
+        sv.addView(col);
+        wrap.addView(sv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // Tip banner
+        LinearLayout tipCard = new LinearLayout(ctx);
+        tipCard.setOrientation(LinearLayout.HORIZONTAL);
+        tipCard.setGravity(Gravity.CENTER_VERTICAL);
+        tipCard.setPadding(dp(12), dp(8), dp(12), dp(8));
+        tipCard.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
+        LinearLayout.LayoutParams tpLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tpLp.setMargins(0, 0, 0, dp(8));
+
+        TextView tvTip = new TextView(ctx);
+        tvTip.setText("💎 原生 CPaySystem 货币修改\n实时同步钻石、游园币、游园积分与累计充值，存档内与游戏商城均生效");
+        tvTip.setTextColor(curTheme.accent);
+        tvTip.setTextSize(11.5f);
+        tvTip.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        tipCard.addView(tvTip);
+
+        final Button btnRefCurr = makePillBtn("🔄 刷新", curTheme.btnBlue, 28);
+        btnRefCurr.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(9, 0, 0, 0L, "");
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        if (currencyRefreshHook != null) currencyRefreshHook.run();
+                        Toast.makeText(ctx, "货币数值已同步", Toast.LENGTH_SHORT).show();
+                    }
+                }, 150);
+            }
+        });
+        tipCard.addView(btnRefCurr);
+        col.addView(tipCard, tpLp);
+
+        final String[] names = new String[] { "钻石 (Diamond)", "游园币 (Garden Coin)", "游园积分 (Garden Point)", "累计充值额度 (Cumulative Payment)" };
+        final String[] icons = new String[] { "💎", "🪙", "🎟️", "💰" };
+        final int[][] quickSets = new int[][] {
+            { 1000, 10000, 100000, 999999 },
+            { 1000, 10000, 100000, 999999 },
+            { 1000, 10000, 100000, 999999 },
+            { 648, 6480, 64800, 99999 }
+        };
+
+        final List<LinearLayout> cCards = new ArrayList<LinearLayout>();
+
+        for (int i = 0; i < 4; i++) {
+            final int type = i;
+            final String cName = names[i];
+            final String cIcon = icons[i];
+            final int[] qVals = quickSets[i];
+
+            final LinearLayout card = new LinearLayout(ctx);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setPadding(dp(12), dp(10), dp(12), dp(10));
+            card.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(10)));
+            LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            cLp.setMargins(0, 0, 0, dp(8));
+
+            // Top: Name + Current value
+            LinearLayout topR = new LinearLayout(ctx);
+            topR.setOrientation(LinearLayout.HORIZONTAL);
+            topR.setGravity(Gravity.CENTER_VERTICAL);
+
+            TextView tvTitle = new TextView(ctx);
+            tvTitle.setText(cIcon + " " + cName);
+            tvTitle.setTextSize(13);
+            tvTitle.setTypeface(null, Typeface.BOLD);
+            tvTitle.setTextColor(curTheme.textPri);
+            tvTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            topR.addView(tvTitle);
+
+            final TextView tvVal = new TextView(ctx);
+            tvVal.setText("当前: 0");
+            tvVal.setTextSize(13);
+            tvVal.setTypeface(null, Typeface.BOLD);
+            tvVal.setTextColor(curTheme.emerald);
+            topR.addView(tvVal);
+            tvCurrencyVals[i] = tvVal;
+            card.addView(topR);
+
+            // Quick add buttons row
+            LinearLayout qRow = new LinearLayout(ctx);
+            qRow.setOrientation(LinearLayout.HORIZONTAL);
+            qRow.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams qLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            qLp.setMargins(0, dp(6), 0, dp(6));
+
+            TextView tvQLbl = new TextView(ctx);
+            tvQLbl.setText("快捷修改: ");
+            tvQLbl.setTextSize(11);
+            tvQLbl.setTextColor(curTheme.textSec);
+            qRow.addView(tvQLbl);
+
+            for (final int qv : qVals) {
+                final boolean isMax = (qv == 999999 || qv == 99999);
+                String btnText = isMax ? ("设为 " + qv) : ("+" + qv);
+                Button qb = makePillBtn(btnText, isMax ? curTheme.btnGreen : curTheme.btnBlue, 26);
+                qb.setTextSize(10);
+                qb.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        int target;
+                        if (isMax) target = qv;
+                        else target = liveCurrency[type] + qv;
+                        if (target < 0) target = 0;
+                        Menu.NativeQuery(16, type, target, 0L, "");
+                        liveCurrency[type] = target;
+                        tvVal.setText("当前: " + target);
+                        Toast.makeText(ctx, cName + " 已设置为 " + target, Toast.LENGTH_SHORT).show();
+                    }
+                });
+                qRow.addView(qb);
+            }
+            card.addView(qRow, qLp);
+
+            // Custom input row
+            LinearLayout inRow = new LinearLayout(ctx);
+            inRow.setOrientation(LinearLayout.HORIZONTAL);
+            inRow.setGravity(Gravity.CENTER_VERTICAL);
+
+            final EditText etVal = makeDarkEdit("自定义数值...", true);
+            etVal.setLayoutParams(new LinearLayout.LayoutParams(0, dp(30), 1f));
+            inRow.addView(etVal);
+
+            final Button btnSet = makePillBtn("设定此数值", curTheme.btnGreen, 30);
+            btnSet.setTextSize(10.5f);
+            btnSet.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    hideKeyboard(v);
+                    int val = 0;
+                    try { val = Integer.parseInt(etVal.getText().toString().trim()); } catch (Throwable ignored) {}
+                    if (val < 0) val = 0;
+                    Menu.NativeQuery(16, type, val, 0L, "");
+                    liveCurrency[type] = val;
+                    tvVal.setText("当前: " + val);
+                    Toast.makeText(ctx, cName + " 已设定为 " + val, Toast.LENGTH_SHORT).show();
+                }
+            });
+            inRow.addView(btnSet);
+
+            final Button btnAdd = makePillBtn("增加该值", curTheme.btnSlate, 30);
+            btnAdd.setTextSize(10.5f);
+            btnAdd.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    hideKeyboard(v);
+                    int delta = 0;
+                    try { delta = Integer.parseInt(etVal.getText().toString().trim()); } catch (Throwable ignored) {}
+                    int target = liveCurrency[type] + delta;
+                    if (target < 0) target = 0;
+                    Menu.NativeQuery(16, type, target, 0L, "");
+                    liveCurrency[type] = target;
+                    tvVal.setText("当前: " + target);
+                    Toast.makeText(ctx, cName + " 已设置为 " + target, Toast.LENGTH_SHORT).show();
+                }
+            });
+            inRow.addView(btnAdd);
+
+            card.addView(inRow);
+            cCards.add(card);
+            col.addView(card, cLp);
+        }
+
+        currencyRefreshHook = new Runnable() {
+            @Override public void run() {
+                try {
+                    File f = new File(ctx.getFilesDir(), "dyn_currency.json");
+                    String raw = readFileText(f);
+                    if (raw != null && raw.startsWith("{")) {
+                        JSONObject o = new JSONObject(raw);
+                        liveCurrency[0] = o.optInt("diamond", 0);
+                        liveCurrency[1] = o.optInt("gardenCoin", 0);
+                        liveCurrency[2] = o.optInt("gardenPoint", 0);
+                        liveCurrency[3] = o.optInt("cumulativePayment", 0);
+                        for (int k = 0; k < 4; k++) {
+                            if (tvCurrencyVals[k] != null) {
+                                tvCurrencyVals[k].setText("当前: " + liveCurrency[k]);
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        };
+
+        themeRefreshHooks.add(new Runnable() {
+            @Override public void run() {
+                btnRefCurr.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
+                for (LinearLayout c : cCards) {
+                    c.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(10)));
+                }
+            }
+        });
+
+        return wrap;
+    }
+
+    // =========================================================================
+    //  TAB 5: 其他功能 (改版: 普通横向开关项 + 仅机关枪保留卡片与调速滑条)
+    // =========================================================================
+    private LinearLayout makeSwitchRow(String title, String sub, boolean initialVal, final Switch[] outSw, final CompoundButton.OnCheckedChangeListener listener) {
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(8), dp(12), dp(8));
+        row.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(0, 0, 0, dp(5));
+        row.setLayoutParams(lp);
+
+        LinearLayout textCol = new LinearLayout(ctx);
+        textCol.setOrientation(LinearLayout.VERTICAL);
+        textCol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView tvTitle = new TextView(ctx);
+        tvTitle.setText(title);
+        tvTitle.setTextSize(12f);
+        tvTitle.setTextColor(curTheme.textPri);
+        tvTitle.setTypeface(null, Typeface.BOLD);
+        textCol.addView(tvTitle);
+
+        if (sub != null && !sub.isEmpty()) {
+            TextView tvSub = new TextView(ctx);
+            tvSub.setText(sub);
+            tvSub.setTextSize(10.5f);
+            tvSub.setTextColor(curTheme.textSec);
+            tvSub.setPadding(0, dp(2), 0, 0);
+            textCol.addView(tvSub);
+            otherFeatureSubs.add(tvSub);
+        }
+        row.addView(textCol);
+        otherFeatureTitles.add(tvTitle);
+        otherFeatureRows.add(row);
+
+        final Switch sw = new Switch(ctx);
+        sw.setChecked(initialVal);
+        sw.setOnCheckedChangeListener(listener);
+        row.addView(sw);
+        if (outSw != null && outSw.length > 0) outSw[0] = sw;
+
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { sw.toggle(); }
+        });
+        return row;
+    }
+
     private FrameLayout buildOtherFeaturesPage() {
         FrameLayout wrap = new FrameLayout(ctx);
         ScrollView sv = new ScrollView(ctx);
@@ -2599,7 +3380,7 @@ public final class ModConsole {
         wrap.addView(sv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         tvOtherStatus = new TextView(ctx);
-        tvOtherStatus.setText("状态: 所有战斗/探索/付费/反作弊开关实时生效");
+        tvOtherStatus.setText("状态: 所有功能开关均实时生效，适配单人剧情与副本联机挑战");
         tvOtherStatus.setTextColor(curTheme.accent);
         tvOtherStatus.setTextSize(11);
         tvOtherStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
@@ -2610,56 +3391,46 @@ public final class ModConsole {
         stLp.setMargins(0, 0, 0, dp(6));
         col.addView(tvOtherStatus, stLp);
 
-        // Row 1: Anti-Cheat + Ammo + Durability
-        LinearLayout r1 = new LinearLayout(ctx);
-        r1.setOrientation(LinearLayout.HORIZONTAL);
-        r1.setBaselineAligned(false);
-        LinearLayout.LayoutParams rLp1 = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rLp1.setMargins(0, 0, 0, dp(6));
+        otherFeatureRows.clear();
+        otherFeatureTitles.clear();
+        otherFeatureSubs.clear();
 
-        cardAC = makeToggleCard("🔒 全链路反作弊保护", "C#+协议+Java检测封号拦截 (默认开)", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                flagAC = !flagAC;
+        // 1. Anti-cheat switch
+        final Switch[] swHolderAC = new Switch[1];
+        LinearLayout rAC = makeSwitchRow("🔒 全链路反作弊保护", "C#协议+底层反作弊拦截，防止封号与上报 (推荐常开)", flagAC, swHolderAC, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagAC = isOn;
                 XposedEntry.antiCheatEnabled = flagAC;
                 Preferences.changeFeatureBool("全代码拦截作弊检验/上报/封号", 60, flagAC);
                 Menu.NativeQuery(10, 0, flagAC ? 1 : 0, 0L, "");
-                syncToggleCardStyles();
             }
         });
-        tvACState = attachStatusPill(cardAC);
-        r1.addView(cardAC, gridCardLp(6));
+        swAC = swHolderAC[0];
+        col.addView(rAC);
 
-        cardAmmo = makeToggleCard("🔫 子弹不减反增", "远程武器开火消耗弹药反而 +1", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                flagAmmo = !flagAmmo;
+        // 2. Ammo switch
+        final Switch[] swHolderAmmo = new Switch[1];
+        LinearLayout rAmmo = makeSwitchRow("🔫 子弹不减反增", "远程枪械/弓弩开火消耗弹药反而 +1", flagAmmo, swHolderAmmo, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagAmmo = isOn;
                 Preferences.changeFeatureBool("子弹不减反增", 40, flagAmmo);
                 Menu.NativeQuery(10, 1, flagAmmo ? 1 : 0, 0L, "");
-                syncToggleCardStyles();
             }
         });
-        tvAmmoState = attachStatusPill(cardAmmo);
-        r1.addView(cardAmmo, gridCardLp(6));
+        swAmmo = swHolderAmmo[0];
+        col.addView(rAmmo);
 
-        cardEndur = makeToggleCard("🛡️ 锁定装备耐久", "全部武器/防具零损耗", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                flagEndur = !flagEndur;
+        // 3. Durability switch + "补满耐久" button
+        final Switch[] swHolderEndur = new Switch[1];
+        LinearLayout rEndur = makeSwitchRow("🛡️ 锁定装备耐久", "全部武器、护甲防具零损耗", flagEndur, swHolderEndur, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagEndur = isOn;
                 Preferences.changeFeatureBool("锁定武器/装备耐久", 41, flagEndur);
                 Menu.NativeQuery(10, 2, flagEndur ? 1 : 0, 0L, "");
-                syncToggleCardStyles();
             }
         });
-        LinearLayout footEndur = new LinearLayout(ctx);
-        footEndur.setOrientation(LinearLayout.HORIZONTAL);
-        footEndur.setGravity(Gravity.CENTER_VERTICAL);
-        tvEndurState = new TextView(ctx);
-        tvEndurState.setTextSize(10.5f);
-        tvEndurState.setTypeface(null, Typeface.BOLD);
-        tvEndurState.setGravity(Gravity.CENTER_VERTICAL);
-        tvEndurState.setMinHeight(dp(24));
-        tvEndurState.setSingleLine(true);
-        tvEndurState.setEllipsize(TextUtils.TruncateAt.END);
-        tvEndurState.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        final Button btnFixEndur = makePillBtn("补满耐久", curTheme.btnBlue, 24);
+        swEndur = swHolderEndur[0];
+        final Button btnFixEndur = makePillBtn("补满耐久", curTheme.btnBlue, 26);
         btnFixEndur.setTextSize(10);
         btnFixEndur.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
@@ -2667,68 +3438,125 @@ public final class ModConsole {
                 Toast.makeText(ctx, "已补满身上及背包装备耐久", Toast.LENGTH_SHORT).show();
             }
         });
-        footEndur.addView(tvEndurState);
-        footEndur.addView(btnFixEndur);
-        cardEndur.addView(footEndur);
-        r1.addView(cardEndur, gridCardLp(0));
-        col.addView(r1, rLp1);
+        rEndur.addView(btnFixEndur, rEndur.getChildCount() - 1);
+        col.addView(rEndur);
 
-        // Row 2: Instant Interact + Warehouse Infinite Stack + Noclip
-        LinearLayout r2 = new LinearLayout(ctx);
-        r2.setOrientation(LinearLayout.HORIZONTAL);
-        r2.setBaselineAligned(false);
-        LinearLayout.LayoutParams rLp2 = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rLp2.setMargins(0, 0, 0, dp(6));
-
-        cardInst = makeToggleCard("⚡ 关闭交互时间", "采集/拾取/砍伐/回家无需读条(可关恢复)", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                flagInstant = !flagInstant;
+        // 4. Instant interact switch (includes tree, mine, furniture chopping, pickup, home)
+        final Switch[] swHolderInst = new Switch[1];
+        LinearLayout rInst = makeSwitchRow("⚡ 关闭交互时间", "砍树/采矿/砍家具/采集/拾取/开箱/回家0秒瞬时交互无需读条", flagInstant, swHolderInst, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagInstant = isOn;
                 Preferences.changeFeatureBool("关闭交互时间", 71, flagInstant);
                 Menu.NativeQuery(10, 4, flagInstant ? 1 : 0, 0L, "");
-                syncToggleCardStyles();
             }
         });
-        tvInstState = attachStatusPill(cardInst);
-        r2.addView(cardInst, gridCardLp(6));
+        swInstant = swHolderInst[0];
+        col.addView(rInst);
 
-        cardInfStk = makeToggleCard("📦 无限堆叠 (仓库)", "仓库物品无上限(含战术背心等装备)", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                flagInfStack = !flagInfStack;
+        // 5. Infinite stack switch (strictly warehouse only and matches durability/NBT)
+        final Switch[] swHolderInfStk = new Switch[1];
+        LinearLayout rInfStk = makeSwitchRow("📦 仓库无限堆叠", "仅仓库生效，且仅限相同NBT/耐久度物品无限堆叠", flagInfStack, swHolderInfStk, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagInfStack = isOn;
                 Preferences.changeFeatureBool("无限堆叠(仓库)", 72, flagInfStack);
                 Menu.NativeQuery(10, 5, flagInfStack ? 1 : 0, 0L, "");
-                syncToggleCardStyles();
             }
         });
-        tvInfStkState = attachStatusPill(cardInfStk);
-        r2.addView(cardInfStk, gridCardLp(6));
+        swInfStack = swHolderInfStk[0];
+        col.addView(rInfStk);
 
-        cardNoclip = makeToggleCard("👻 穿墙模式", "关闭主角实体碰撞箱，自由走过任何障碍", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                flagNoclip = !flagNoclip;
+        // 6. Noclip switch
+        final Switch[] swHolderNoclip = new Switch[1];
+        LinearLayout rNoclip = makeSwitchRow("👻 穿墙模式", "关闭主角实体碰撞箱，自由穿行任何障碍与地图", flagNoclip, swHolderNoclip, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagNoclip = isOn;
                 Preferences.changeFeatureBool("穿墙模式", 73, flagNoclip);
                 Menu.NativeQuery(10, 6, flagNoclip ? 1 : 0, 0L, "");
-                syncToggleCardStyles();
             }
         });
-        tvNoclipState = attachStatusPill(cardNoclip);
-        r2.addView(cardNoclip, gridCardLp(0));
-        col.addView(r2, rLp2);
+        swNoclip = swHolderNoclip[0];
+        col.addView(rNoclip);
 
-        // Row 3: Unlock Blueprints + Unlock Paid Items + Save/Auto-Load Props
-        LinearLayout r3 = new LinearLayout(ctx);
-        r3.setOrientation(LinearLayout.HORIZONTAL);
-        r3.setBaselineAligned(false);
-        LinearLayout.LayoutParams rLp3 = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rLp3.setMargins(0, 0, 0, dp(6));
-
-        cardBp = makeToggleCard("📜 一键解锁全部蓝图", "全部 65+ 工作台/装备/建筑蓝图", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                Menu.NativeQuery(6, 0, 0, 0L, "");
-                mainH.postDelayed(new Runnable() { @Override public void run() { pollSnapshot(); } }, 220);
-                Toast.makeText(ctx, "已静默解锁全部蓝图", Toast.LENGTH_SHORT).show();
+        // 7. Sewer highlight switch
+        final Switch[] swHolderSewer = new Switch[1];
+        LinearLayout rSewer = makeSwitchRow("💡 下水道/洞穴全图高亮", "下水道、洞穴等黑暗地图始终全图照明高亮", flagSewer, swHolderSewer, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagSewer = isOn;
+                Preferences.changeFeatureBool("下水道高亮", 81, flagSewer);
+                Menu.NativeQuery(10, 8, flagSewer ? 1 : 0, 0L, "");
+                Toast.makeText(ctx, flagSewer ? "已开启下水道/洞穴全图高亮" : "已关闭下水道高亮", Toast.LENGTH_SHORT).show();
             }
         });
-        final Button btnBpGo = makePillBtn("立即解锁全部蓝图", curTheme.btnGreen, 24);
+        swSewer = swHolderSewer[0];
+        col.addView(rSewer);
+
+        // 8. Always event switch
+        final Switch[] swHolderEvent = new Switch[1];
+        LinearLayout rEvent = makeSwitchRow("🎪 限时活动全开放", "周末/节日/限时开放的活动玩法与商人常驻开放", flagEvent, swHolderEvent, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagEvent = isOn;
+                Preferences.changeFeatureBool("限时活动开放", 82, flagEvent);
+                Menu.NativeQuery(10, 9, flagEvent ? 1 : 0, 0L, "");
+                Toast.makeText(ctx, flagEvent ? "已开启限时活动全开放" : "已恢复原版限时活动开放规则", Toast.LENGTH_SHORT).show();
+            }
+        });
+        swEvent = swHolderEvent[0];
+        col.addView(rEvent);
+
+        // 9. Phonograph local MP3 switch
+        final Switch[] swHolderPhono = new Switch[1];
+        LinearLayout rPhono = makeSwitchRow("📻 留声机播放本地音乐", "家中留声机扫描播放 /sdcard/Music 或 /sdcard/AresMod/Music 的MP3", flagPhono, swHolderPhono, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagPhono = isOn;
+                Preferences.changeFeatureBool("留声机播放本地音乐", 83, flagPhono);
+                Menu.NativeQuery(10, 10, flagPhono ? 1 : 0, 0L, "");
+                Toast.makeText(ctx, flagPhono ? "已开启留声机播放本地MP3 (/sdcard/Music 或 /sdcard/AresMod/Music)" : "已恢复原版留声机音乐", Toast.LENGTH_SHORT).show();
+            }
+        });
+        swPhono = swHolderPhono[0];
+        col.addView(rPhono);
+
+        // 10. Unlock paid items switch
+        final Switch[] swHolderPaid = new Switch[1];
+        LinearLayout rPaid = makeSwitchRow("💎 一键解锁全部付费道具", "猎人小屋/哈士奇/猪王/商城与DLC扩展内容", flagPaid, swHolderPaid, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagPaid = isOn;
+                Preferences.changeFeatureBool("一键解锁全部付费道具", 70, flagPaid);
+                Menu.NativeQuery(10, 3, flagPaid ? 1 : 0, 0L, "");
+                Toast.makeText(ctx, flagPaid ? "已本地开启全付费道具解锁" : "已恢复原始付费状态", Toast.LENGTH_SHORT).show();
+            }
+        });
+        swPaid = swHolderPaid[0];
+        col.addView(rPaid);
+
+        // 11. Blueprints row + button
+        LinearLayout rBp = new LinearLayout(ctx);
+        rBp.setOrientation(LinearLayout.HORIZONTAL);
+        rBp.setGravity(Gravity.CENTER_VERTICAL);
+        rBp.setPadding(dp(12), dp(8), dp(12), dp(8));
+        rBp.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
+        LinearLayout.LayoutParams bpLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bpLp.setMargins(0, 0, 0, dp(5));
+        rBp.setLayoutParams(bpLp);
+
+        LinearLayout bpCol = new LinearLayout(ctx);
+        bpCol.setOrientation(LinearLayout.VERTICAL);
+        bpCol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView tvBpT = new TextView(ctx);
+        tvBpT.setText("📜 一键解锁全部蓝图");
+        tvBpT.setTextSize(12f);
+        tvBpT.setTextColor(curTheme.textPri);
+        tvBpT.setTypeface(null, Typeface.BOLD);
+        bpCol.addView(tvBpT);
+        TextView tvBpS = new TextView(ctx);
+        tvBpS.setText("解锁全部 65+ 工作台/武器/防具/建筑蓝图");
+        tvBpS.setTextSize(10.5f);
+        tvBpS.setTextColor(curTheme.textSec);
+        tvBpS.setPadding(0, dp(2), 0, 0);
+        bpCol.addView(tvBpS);
+        rBp.addView(bpCol);
+
+        final Button btnBpGo = makePillBtn("立即解锁全部蓝图", curTheme.btnGreen, 26);
         btnBpGo.setTextSize(10);
         btnBpGo.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
@@ -2737,66 +3565,94 @@ public final class ModConsole {
                 Toast.makeText(ctx, "已静默解锁全部蓝图", Toast.LENGTH_SHORT).show();
             }
         });
-        cardBp.addView(btnBpGo);
-        r3.addView(cardBp, gridCardLp(6));
+        rBp.addView(btnBpGo);
+        otherFeatureRows.add(rBp);
+        otherFeatureTitles.add(tvBpT);
+        otherFeatureSubs.add(tvBpS);
+        col.addView(rBp);
 
-        cardPaid = makeToggleCard("💎 解锁全部付费道具", "猎人小屋/哈士奇/猪王/商城/DLC", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                flagPaid = !flagPaid;
-                Preferences.changeFeatureBool("一键解锁全部付费道具", 70, flagPaid);
-                Menu.NativeQuery(10, 3, flagPaid ? 1 : 0, 0L, "");
-                syncToggleCardStyles();
-                Toast.makeText(ctx, flagPaid ? "已本地开启全付费道具解锁" : "已恢复原始付费状态", Toast.LENGTH_SHORT).show();
-            }
-        });
-        tvPaidState = attachStatusPill(cardPaid);
-        r3.addView(cardPaid, gridCardLp(6));
-
-        cardAutoProps = makeToggleCard("💾 保存属性配置", "保存数值与冻结状态，下次进游自动加载", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                flagAutoProps = !flagAutoProps;
+        // 12. Saved Props row with Save & Clear buttons
+        final Switch[] swHolderProps = new Switch[1];
+        LinearLayout rProps = makeSwitchRow("💾 属性配置持久化", "进存档自动加载已保存的数值与锁定状态", flagAutoProps, swHolderProps, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagAutoProps = isOn;
                 modPrefs.edit().putBoolean("auto_restore_props", flagAutoProps).apply();
-                syncToggleCardStyles();
                 Toast.makeText(ctx, flagAutoProps ? "下次进游戏将自动加载属性配置" : "已暂停下次进游戏自动加载", Toast.LENGTH_SHORT).show();
             }
         });
-        LinearLayout footProps = new LinearLayout(ctx);
-        footProps.setOrientation(LinearLayout.HORIZONTAL);
-        footProps.setGravity(Gravity.CENTER_VERTICAL);
-        tvAutoPropState = new TextView(ctx);
-        tvAutoPropState.setTextSize(10.5f);
-        tvAutoPropState.setTypeface(null, Typeface.BOLD);
-        tvAutoPropState.setGravity(Gravity.CENTER_VERTICAL);
-        tvAutoPropState.setMinHeight(dp(24));
-        tvAutoPropState.setSingleLine(true);
-        tvAutoPropState.setEllipsize(TextUtils.TruncateAt.END);
-        tvAutoPropState.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        final Button btnSaveProps = makePillBtn("保存配置", curTheme.btnGreen, 24);
+        swAutoProps = swHolderProps[0];
+
+        final Button btnSaveProps = makePillBtn("保存配置", curTheme.btnGreen, 26);
         btnSaveProps.setTextSize(10);
         btnSaveProps.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { saveCurrentPropsConfig(); }
+            @Override public void onClick(View v) {
+                saveCurrentPropsConfig();
+                Toast.makeText(ctx, "已保存当前 " + savedPropVals.size() + " 项属性配置", Toast.LENGTH_SHORT).show();
+            }
         });
-        btnSaveProps.setOnLongClickListener(new View.OnLongClickListener() {
-            @Override public boolean onLongClick(View v) { clearSavedPropsConfig(); return true; }
-        });
-        footProps.addView(tvAutoPropState);
-        footProps.addView(btnSaveProps);
-        cardAutoProps.addView(footProps);
-        r3.addView(cardAutoProps, gridCardLp(0));
-        col.addView(r3, rLp3);
 
-        // Row 4: Full-width Machine Gun Card + Fire Rate Speed Slider & Presets
-        cardMG = makeToggleCard("🔥 机关枪模式 (仅远程枪械/弓弩有效，近战刀棍不受影响)",
-                "开启后滑动右攻击轮盘不松手即可持续连射，松手即停",
-                new View.OnClickListener() {
-                    @Override public void onClick(View v) {
-                        flagMG = !flagMG;
-                        Preferences.changeFeatureBool("机关枪模式", 74, flagMG);
-                        Menu.NativeQuery(10, 7, flagMG ? 1 : 0, 0L, "");
-                        syncToggleCardStyles();
-                    }
-                });
-        tvMGState = attachStatusPill(cardMG);
+        final Button btnClearProps = makePillBtn("删除已存配置", curTheme.btnRed, 26);
+        btnClearProps.setTextSize(10);
+        btnClearProps.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                clearSavedPropsConfig();
+                Toast.makeText(ctx, "已删除当前保存的属性配置", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        rProps.addView(btnSaveProps, rProps.getChildCount() - 1);
+        rProps.addView(btnClearProps, rProps.getChildCount() - 1);
+        col.addView(rProps);
+
+        // 13. Machine Gun mode (Kept as full Card with Slider & Presets)
+        cardMG = new LinearLayout(ctx);
+        cardMG.setOrientation(LinearLayout.VERTICAL);
+        cardMG.setPadding(dp(12), dp(10), dp(12), dp(10));
+        cardMG.setBackground(makeRoundBox(flagMG ? curTheme.cardOnBg : curTheme.cardBg, flagMG ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+        LinearLayout.LayoutParams mgLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mgLp.setMargins(0, dp(4), 0, dp(4));
+
+        LinearLayout mgTop = new LinearLayout(ctx);
+        mgTop.setOrientation(LinearLayout.HORIZONTAL);
+        mgTop.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tvMgT = new TextView(ctx);
+        tvMgT.setText("🔥 机关枪模式 (仅远程枪械/弓弩有效，近战刀棍不受影响)");
+        tvMgT.setTextSize(12.5f);
+        tvMgT.setTextColor(curTheme.textPri);
+        tvMgT.setTypeface(null, Typeface.BOLD);
+        tvMgT.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        mgTop.addView(tvMgT);
+
+        tvMGState = new TextView(ctx);
+        tvMGState.setTextSize(10.5f);
+        tvMGState.setTypeface(null, Typeface.BOLD);
+        tvMGState.setPadding(0, 0, dp(6), 0);
+        tvMGState.setText(flagMG ? "● 机关枪生效中" : "○ 未开启");
+        tvMGState.setTextColor(flagMG ? curTheme.emerald : curTheme.textSec);
+        mgTop.addView(tvMGState);
+
+        swMG = new Switch(ctx);
+        swMG.setChecked(flagMG);
+        swMG.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagMG = isOn;
+                Preferences.changeFeatureBool("机关枪模式", 74, flagMG);
+                Menu.NativeQuery(10, 7, flagMG ? 1 : 0, 0L, "");
+                cardMG.setBackground(makeRoundBox(flagMG ? curTheme.cardOnBg : curTheme.cardBg, flagMG ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+                tvMGState.setText(flagMG ? "● 机关枪生效中" : "○ 未开启");
+                tvMGState.setTextColor(flagMG ? curTheme.emerald : curTheme.textSec);
+            }
+        });
+        mgTop.addView(swMG);
+        cardMG.addView(mgTop);
+
+        TextView tvMgSub = new TextView(ctx);
+        tvMgSub.setText("开启后滑动右攻击轮盘不松手即可持续连射，松手即停");
+        tvMgSub.setTextSize(10.5f);
+        tvMgSub.setTextColor(curTheme.textSec);
+        tvMgSub.setPadding(0, dp(2), 0, dp(4));
+        cardMG.addView(tvMgSub);
 
         LinearLayout mgRateRow = new LinearLayout(ctx);
         mgRateRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -2812,7 +3668,7 @@ public final class ModConsole {
         mgRateRow.addView(tvMgRateVal, rLblLp);
 
         final SeekBar sbMg = new SeekBar(ctx);
-        sbMg.setMax(590); // maps 0..590 -> 10..600 (1.0 .. 60.0 shots/s)
+        sbMg.setMax(590);
         sbMg.setProgress(Math.max(0, Math.min(590, mgRateX10 - 10)));
         sbMg.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         sbMg.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -2850,23 +3706,35 @@ public final class ModConsole {
             mgRateRow.addView(rb);
         }
         cardMG.addView(mgRateRow);
-        col.addView(cardMG, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        col.addView(cardMG, mgLp);
 
         themeRefreshHooks.add(new Runnable() {
             @Override public void run() {
+                for (View r : otherFeatureRows) {
+                    r.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
+                }
+                for (TextView t : otherFeatureTitles) {
+                    t.setTextColor(curTheme.textPri);
+                }
+                for (TextView s : otherFeatureSubs) {
+                    s.setTextColor(curTheme.textSec);
+                }
                 btnFixEndur.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
                 btnBpGo.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
                 btnSaveProps.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+                btnClearProps.setBackground(makeRoundBox(curTheme.btnRed, 0x33FFFFFF, 1, dp(7)));
                 tvMgRateVal.setTextColor(curTheme.accent);
                 for (Button rb : rateBtns) {
                     rb.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                }
+                if (cardMG != null) {
+                    cardMG.setBackground(makeRoundBox(flagMG ? curTheme.cardOnBg : curTheme.cardBg, flagMG ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
                 }
             }
         });
 
         return wrap;
     }
-
     // =========================================================================
     //  TAB 4: 主题风格 (5 套完整切换配色)
     // =========================================================================

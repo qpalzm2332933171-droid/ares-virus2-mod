@@ -40,7 +40,9 @@ if (-not (Test-Path $pubAsm)) {
     /r:"$GameManagedDir\mscorlib.dll" `
     /r:"$GameManagedDir\System.dll" `
     /r:"$GameManagedDir\UnityEngine.CoreModule.dll" `
+    /r:"$GameManagedDir\UnityEngine.AndroidJNIModule.dll" `
     /r:"$GameManagedDir\AotDll.dll" `
+    /r:"$GameManagedDir\Mirror.dll" `
     /r:"$pubAsm" `
     /r:"$work\UnityEngine.Physics2DModule.dll" `
     /r:"$work\UnityEngine.UI.dll" `

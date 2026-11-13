@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using Com.LuisPedroFonseca.ProCamera2D;
 using UnityEngine;
@@ -85,8 +86,15 @@ namespace ModBridge
 
         // Noclip state (tracked colliders that were originally non-trigger)
         private Collider2D[] _noclipCols = null;
-        private CEntity _noclipPlayer = null;
+        private GameObject _noclipGo = null;
         private bool _noclipActive = false;
+
+        // Tool instant interact reflection field
+        private static FieldInfo s_toolDataFi = null;
+
+        // Local MP3 player state
+        private AndroidJavaObject _mediaPlayer = null;
+        private string _playingMp3Path = null;
 
         // Machine Gun timer
         private float _nextMgFireTime = 0f;
@@ -168,6 +176,7 @@ namespace ModBridge
             IGameSystem gs = CGameSystem.Instance;
             int cid = 0;
             CEntity player = null;
+            LAN.CLanEntity lanPlayer = null;
 
             if (mgr != null && gs != null && gs.containerSystem != null)
             {
@@ -181,14 +190,28 @@ namespace ModBridge
                     }
                 }
             }
+            if (player == null)
+            {
+                try
+                {
+                    lanPlayer = LAN.CLanMainCharacter.localPlayer;
+                    if (lanPlayer != null)
+                    {
+                        if (cid == 0) cid = LAN.CLanMainCharacter.nCustomID;
+                        if (cid == 0) cid = lanPlayer.nCustomID;
+                    }
+                }
+                catch { }
+            }
 
-            *(int*)(b + 0x10) = (player != null && cid != 0) ? 1 : 0;
+            bool sceneReady = ((player != null || lanPlayer != null) && cid != 0);
+            *(int*)(b + 0x10) = sceneReady ? 1 : 0;
             *(int*)(b + 0x14) = cid;
 
             if (cid != 0 && cid != _lastCid)
             {
                 _lastCid = cid;
-                Debug.Log("[ModBridge] Scene player ready cid=" + cid.ToString());
+                Debug.Log("[ModBridge] Scene player ready cid=" + cid.ToString() + " lan=" + (lanPlayer != null).ToString());
             }
 
             // Dynamic config auto-export once data loaders are ready
@@ -202,7 +225,10 @@ namespace ModBridge
             }
 
             // Instant Interact DGameConfig sync (bit 4 = 16u)
-            MaintainInstantInteract((flags & 16u) != 0);
+            MaintainInstantInteract((flags & 16u) != 0, player, lanPlayer);
+            MaintainSewerHighlight((flags & 256u) != 0);
+            MaintainAlwaysEvents((flags & 512u) != 0);
+            MaintainPhonograph((flags & 1024u) != 0);
 
             // Paid Unlock sync (bit 3 = 8u)
             if (gs != null)
@@ -231,7 +257,7 @@ namespace ModBridge
                 int arg2 = *(int*)(cmd + 0x08);
                 int arg3 = *(int*)(cmd + 0x0C);
                 long argL = *(long*)(cmd + 0x10);
-                int res = ExecuteCmd(ctype, arg1, arg2, arg3, argL, gs, cid, player);
+                int res = ExecuteCmd(ctype, arg1, arg2, arg3, argL, gs, cid, player, lanPlayer);
                 *(int*)(cmd + 0x18) = res;
                 if (res > 0)
                 {
@@ -248,19 +274,29 @@ namespace ModBridge
             }
             FlushDirtyContainers(cid);
 
-            if (player != null && cid != 0)
+            if (sceneReady)
             {
-                // Maintain locked attributes
-                EnforcePropLocks(player);
-                // Maintain custom buff durations
-                MaintainBuffs(player);
-                // Maintain Noclip solid colliders (bit 6 = 64u)
-                MaintainNoclip(player, (flags & 64u) != 0);
-                // Maintain Machine Gun rapid fire (bit 7 = 128u)
-                if ((flags & 128u) != 0)
+                if (player != null)
                 {
-                    MaintainMachineGun(player, mgRateX10);
+                    EnforcePropLocks(player);
+                    MaintainBuffs(player);
+                    MaintainNoclip(player.gameObject, (flags & 64u) != 0);
+                    if ((flags & 128u) != 0)
+                    {
+                        MaintainMachineGun(player, mgRateX10);
+                    }
                 }
+                else if (lanPlayer != null)
+                {
+                    EnforcePropLocksLAN(lanPlayer);
+                    MaintainBuffsLAN(lanPlayer);
+                    MaintainNoclip(lanPlayer.gameObject, (flags & 64u) != 0);
+                    if ((flags & 128u) != 0)
+                    {
+                        MaintainMachineGunLAN(lanPlayer, mgRateX10);
+                    }
+                }
+
                 // Auto-restore durability when LockEndurance turns ON or periodically while ON
                 if ((flags & 4u) != 0 && ((_prevFlags & 4u) == 0 || (_tick % 60u) == 0u))
                 {
@@ -282,7 +318,15 @@ namespace ModBridge
                 // Periodic snapshot (every 12 frames ~ 0.2-0.4s)
                 if (processed > 0 || (_tick % 12u) == 1u)
                 {
-                    UpdateSnapshot(player);
+                    if (player != null) UpdateSnapshot(player);
+                    else if (lanPlayer != null) UpdateSnapshotLAN(lanPlayer);
+                }
+
+                // Periodic export of dynamic warehouse and currency state
+                if ((_tick % 60u) == 12u)
+                {
+                    ExportDynWarehouse(gs);
+                    ExportDynCurrency(gs);
                 }
             }
             else if (_noclipActive)
@@ -297,7 +341,7 @@ namespace ModBridge
             }
         }
 
-        private unsafe int ExecuteCmd(int ctype, int arg1, int arg2, int arg3, long argL, IGameSystem gs, int cid, CEntity player)
+        private unsafe int ExecuteCmd(int ctype, int arg1, int arg2, int arg3, long argL, IGameSystem gs, int cid, CEntity player, LAN.CLanEntity lanPlayer)
         {
             try
             {
@@ -315,27 +359,35 @@ namespace ModBridge
                     case 1: // MOD_CMD_ADD_ITEM (arg1=id, arg2=num, arg3=0 Bag / 1 HomeBox, argL=boxInstanceId)
                         return CmdAddItem(arg1, arg2, arg3, argL, gs, cid);
                     case 2: // MOD_CMD_SET_PROP (arg1=key, arg2=rawVal, arg3=lock -1/0/1)
-                        return CmdSetProp(player, arg1, arg2, arg3);
+                        return CmdSetProp(player, lanPlayer, arg1, arg2, arg3);
                     case 3: // MOD_CMD_UNLOCK_ALL_BP
                         return CmdUnlockAllBP(gs, cid);
                     case 4: // MOD_CMD_APPLY_BUFF (arg1=buffId, arg2=durationSec)
-                        return CmdApplyBuff(player, arg1, arg2);
+                        return CmdApplyBuff(player, lanPlayer, arg1, arg2);
                     case 5: // MOD_CMD_REMOVE_BUFF (arg1=buffId, 0=all)
-                        return CmdRemoveBuff(player, arg1);
+                        return CmdRemoveBuff(player, lanPlayer, arg1);
                     case 6: // MOD_CMD_RESTORE_ENDURANCE
                         return CmdRestoreEndurance(gs, cid);
                     case 7: // MOD_CMD_REFRESH_SNAP
                         if (player != null) UpdateSnapshot(player);
+                        else if (lanPlayer != null) UpdateSnapshotLAN(lanPlayer);
+                        ExportDynWarehouse(gs);
+                        ExportDynCurrency(gs);
                         SetStatus(1, "Snapshot refreshed");
                         return 1;
                     case 8: // MOD_CMD_CLEAR_PROP_LOCKS
                         _lockCount = 0;
                         if (player != null) UpdateSnapshot(player);
+                        else if (lanPlayer != null) UpdateSnapshotLAN(lanPlayer);
                         SetStatus(1, "Property locks cleared");
                         return 1;
                     case 9: // MOD_CMD_UNLOCK_ALL_PAID (arg1=1 apply, 0 restore)
                         if (arg1 != 0) return ApplyPaidUnlock(gs, cid, player);
                         return RestorePaidUnlock(gs);
+                    case 11: // MOD_CMD_DEL_WAREHOUSE_ITEM (arg1=count, arg2=boxId, argL=matUID)
+                        return CmdDeleteWarehouseItem(gs, arg1, (long)arg2, (ulong)argL);
+                    case 12: // MOD_CMD_SET_CURRENCY (arg1=type, arg2=val)
+                        return CmdSetCurrency(gs, arg1, arg2);
                 }
             }
             catch (Exception ex)
@@ -392,16 +444,12 @@ namespace ModBridge
             if (gs == null || cid == 0) return;
             try
             {
-                if (gs.containerSystem != null)
-                {
-                    gs.containerSystem.RefreshContainer(cid, eContainerTypeEnum.Bag);
-                    gs.containerSystem.RefreshContainer(cid, eContainerTypeEnum.Drop);
-                    gs.containerSystem.RefreshContainer(cid, eContainerTypeEnum.Sale);
-                }
-                // Also merge duplicates already sitting inside any Home Storage Box container
+                // Infinite stacking strictly applies ONLY to warehouse containers (CHomeContainer).
+                // Player bag, drop, and sale containers retain vanilla rules (never auto-merged here).
                 CHomeContainerSystem hcs = gs.homeContainerSystem as CHomeContainerSystem;
                 if (hcs != null && hcs.m_dicContainer != null && gs.materialSystem != null)
                 {
+                    IRefitSystem refit = gs.refitSystem;
                     foreach (KeyValuePair<long, CHomeContainer> kv in hcs.m_dicContainer)
                     {
                         CHomeContainer hc = kv.Value;
@@ -409,6 +457,7 @@ namespace ModBridge
                         int cnt = hc.GetSlotCount();
                         if (cnt <= 1) continue;
                         int[] seenIds = new int[cnt];
+                        int[] seenEnds = new int[cnt];
                         CMaterial[] seenMats = new CMaterial[cnt];
                         int seenCount = 0;
                         ulong[] toRemove = new ulong[cnt];
@@ -418,10 +467,18 @@ namespace ModBridge
                             ulong uid = hc.GetMaterialUID(i);
                             CMaterial m = gs.materialSystem.GetMaterialByUID(uid);
                             if (m == null || m.nNumber <= 0) continue;
+
+                            // Refitted weapons carry custom modifications - never stack with unmodified weapons
+                            if (refit != null && refit.IsRefit(uid)) continue;
+
                             int match = -1;
                             for (int j = 0; j < seenCount; j++)
                             {
-                                if (seenIds[j] == m.nConfigID) { match = j; break; }
+                                if (seenIds[j] == m.nConfigID && seenEnds[j] == m.nEndurance)
+                                {
+                                    match = j;
+                                    break;
+                                }
                             }
                             if (match >= 0)
                             {
@@ -431,6 +488,7 @@ namespace ModBridge
                             else
                             {
                                 seenIds[seenCount] = m.nConfigID;
+                                seenEnds[seenCount] = m.nEndurance;
                                 seenMats[seenCount] = m;
                                 seenCount++;
                             }
@@ -442,18 +500,7 @@ namespace ModBridge
                         }
                     }
                 }
-                if (CClientGlobal.Instance != null && CClientGlobal.Instance.GetEventSystem != null)
-                {
-                    eMSG.sContainer_Change ev = default(eMSG.sContainer_Change);
-                    ev.nCustomID = cid;
-                    ev.eContainer = eContainerTypeEnum.Bag;
-                    ev.nMaterialConfigID = 0;
-                    CClientGlobal.Instance.GetEventSystem.FireExecoute(eMSG.EVENT.Container_Change, 0, ev);
-                    eMSG.sEquipment_Change eev = default(eMSG.sEquipment_Change);
-                    eev.nCustomID = cid;
-                    CClientGlobal.Instance.GetEventSystem.FireExecoute(eMSG.EVENT.Equipment_Change, 0, eev);
-                }
-                SetStatus(1, "Merged containers into infinite stacks");
+                SetStatus(1, "Merged warehouse into infinite stacks");
             }
             catch (Exception ex)
             {
@@ -812,16 +859,84 @@ namespace ModBridge
             else if (key == 304 && fo != null) fo.SysncBlockCount();
         }
 
-        private int CmdSetProp(CEntity player, int key, int rawVal, int lockOp)
+        private void ApplySinglePropLAN(LAN.CLanEntity lanPlayer, int key, int targetVal)
         {
-            if (player == null || player.propertyPart == null)
+            if (lanPlayer == null || lanPlayer.propertyPart == null) return;
+            LAN.CLanPropertyPart pp = lanPlayer.propertyPart;
+
+            if (key >= 101 && key <= 108 && DGameConfig.Instance != null)
+            {
+                if (DGameConfig.Instance.nMaxMoveSpeed < targetVal)
+                    DGameConfig.Instance.nMaxMoveSpeed = targetVal + 100000;
+                if (DGameConfig.Instance.nMinMoveSpeed > targetVal && targetVal >= 0)
+                    DGameConfig.Instance.nMinMoveSpeed = 0;
+            }
+
+            if (key == 2)
+            {
+                if (pp.GetValue(ePropValueType.AfterCul, 1, 0) < targetVal)
+                    pp.SetValue(ePropValueType.Original, 1, targetVal, true);
+                pp.SetValue(ePropValueType.Original, 2, targetVal, true);
+                return;
+            }
+            if (key == 303)
+            {
+                if (pp.GetValue(ePropValueType.AfterCul, 302, 0) < targetVal)
+                    pp.SetValue(ePropValueType.Original, 302, targetVal, true);
+                pp.SetValue(ePropValueType.Original, 303, targetVal, true);
+                return;
+            }
+            if (key == 305)
+            {
+                if (pp.GetValue(ePropValueType.AfterCul, 304, 0) < targetVal)
+                    pp.SetValue(ePropValueType.Original, 304, targetVal, true);
+                pp.SetValue(ePropValueType.Original, 305, targetVal, true);
+                return;
+            }
+            if (key == 402 && pp.GetValue(ePropValueType.AfterCul, 403, 0) < targetVal)
+                pp.SetValue(ePropValueType.Original, 403, targetVal, true);
+            else if (key == 411 && pp.GetValue(ePropValueType.AfterCul, 412, 0) < targetVal)
+                pp.SetValue(ePropValueType.Original, 412, targetVal, true);
+            else if (key == 421 && pp.GetValue(ePropValueType.AfterCul, 422, 0) < targetVal)
+                pp.SetValue(ePropValueType.Original, 422, targetVal, true);
+
+            pp.SetValue(ePropValueType.Original, key, targetVal, true);
+        }
+
+        private void EnforcePropLocksLAN(LAN.CLanEntity lanPlayer)
+        {
+            if (lanPlayer == null || lanPlayer.propertyPart == null) return;
+            for (int i = 0; i < _lockCount; i++)
+            {
+                int k = _lockKeys[i];
+                int v = _lockVals[i];
+                int cur = lanPlayer.propertyPart.GetValue(ePropValueType.AfterCul, k, 0);
+                if (cur != v)
+                {
+                    ApplySinglePropLAN(lanPlayer, k, v);
+                }
+            }
+        }
+
+        private int CmdSetProp(CEntity player, LAN.CLanEntity lanPlayer, int key, int rawVal, int lockOp)
+        {
+            if (player == null && lanPlayer == null)
             {
                 SetStatus(-2, "Player entity null");
                 return -2;
             }
-            ApplySingleProp(player, key, rawVal);
-            SetPropLockState(key, rawVal, lockOp);
-            UpdateSnapshot(player);
+            if (player != null)
+            {
+                ApplySingleProp(player, key, rawVal);
+                SetPropLockState(key, rawVal, lockOp);
+                UpdateSnapshot(player);
+            }
+            else if (lanPlayer != null)
+            {
+                ApplySinglePropLAN(lanPlayer, key, rawVal);
+                SetPropLockState(key, rawVal, lockOp);
+                UpdateSnapshotLAN(lanPlayer);
+            }
             SetStatus(1, "Prop " + key.ToString() + "=" + rawVal.ToString() + (lockOp == 1 ? " [LOCK]" : ""));
             return 1;
         }
@@ -925,50 +1040,60 @@ namespace ModBridge
             return 1;
         }
 
-        private int CmdApplyBuff(CEntity player, int buffId, int durationSec)
+        private int CmdApplyBuff(CEntity player, LAN.CLanEntity lanPlayer, int buffId, int durationSec)
         {
-            if (player == null || player.buffPart == null)
+            if (player == null && lanPlayer == null)
             {
-                SetStatus(-2, "Player buffPart null");
+                SetStatus(-2, "Player null");
                 return -2;
             }
-            // Add buff via native CBuffPart.AddBuff(int, CEntity)
-            bool ok = player.buffPart.AddBuff(buffId, player);
-            CBuff cb = player.buffPart.GetBuff(buffId);
-            if (cb != null)
+            float exp = (durationSec > 0) ? (Time.realtimeSinceStartup + (float)durationSec) : -1f;
+            int idx = -1;
+            for (int i = 0; i < _buffCount; i++)
             {
-                cb.m_nCurCycle = -999999;
-                float exp = (durationSec > 0) ? (Time.realtimeSinceStartup + (float)durationSec) : -1f;
-                int idx = -1;
-                for (int i = 0; i < _buffCount; i++)
-                {
-                    if (_buffIds[i] == buffId) { idx = i; break; }
-                }
-                if (idx < 0 && _buffCount < 64) idx = _buffCount++;
-                if (idx >= 0)
-                {
-                    _buffIds[idx] = buffId;
-                    _buffExpireAt[idx] = exp;
-                }
+                if (_buffIds[i] == buffId) { idx = i; break; }
+            }
+            if (idx < 0 && _buffCount < 64) idx = _buffCount++;
+            if (idx >= 0)
+            {
+                _buffIds[idx] = buffId;
+                _buffExpireAt[idx] = exp;
+            }
+
+            bool ok = false;
+            if (player != null && player.buffPart != null)
+            {
+                ok = player.buffPart.AddBuff(buffId, player);
+                CBuff cb = player.buffPart.GetBuff(buffId);
+                if (cb != null) cb.m_nCurCycle = -999999;
+            }
+            if (lanPlayer != null && lanPlayer.buffPart != null)
+            {
+                ok = lanPlayer.buffPart.AddBuff(buffId, lanPlayer);
+                lanPlayer.buffPart.RecordBuffCycle(buffId, -999999);
             }
             SetStatus(ok ? 1 : 0, "Buff " + buffId.ToString() + (durationSec > 0 ? " (" + durationSec.ToString() + "s)" : " (Perm)"));
             return 1;
         }
 
-        private int CmdRemoveBuff(CEntity player, int buffId)
+        private int CmdRemoveBuff(CEntity player, LAN.CLanEntity lanPlayer, int buffId)
         {
-            if (player == null || player.buffPart == null) return -2;
             if (buffId == 0)
             {
-                for (int i = 0; i < _buffCount; i++)
+                if (player != null && player.buffPart != null)
                 {
-                    player.buffPart.ReqRemoveBuff(_buffIds[i]);
+                    for (int i = 0; i < _buffCount; i++) player.buffPart.ReqRemoveBuff(_buffIds[i]);
+                }
+                if (lanPlayer != null && lanPlayer.buffPart != null)
+                {
+                    for (int i = 0; i < _buffCount; i++) lanPlayer.buffPart.RemoveBuff(_buffIds[i]);
                 }
                 _buffCount = 0;
                 SetStatus(1, "Removed mod buffs");
                 return 1;
             }
-            player.buffPart.ReqRemoveBuff(buffId);
+            if (player != null && player.buffPart != null) player.buffPart.ReqRemoveBuff(buffId);
+            if (lanPlayer != null && lanPlayer.buffPart != null) lanPlayer.buffPart.RemoveBuff(buffId);
             for (int i = 0; i < _buffCount; i++)
             {
                 if (_buffIds[i] == buffId)
@@ -985,30 +1110,86 @@ namespace ModBridge
 
         private void MaintainBuffs(CEntity player)
         {
-            if (player.buffPart == null || _buffCount == 0) return;
+            if (player == null || player.buffPart == null || _buffCount == 0) return;
             float now = Time.realtimeSinceStartup;
             for (int i = _buffCount - 1; i >= 0; i--)
             {
                 int bid = _buffIds[i];
                 float exp = _buffExpireAt[i];
                 CBuff cb = player.buffPart.GetBuff(bid);
-                if (cb == null)
+                if (exp <= 0f) // Permanent buff - never auto-drop, re-add if expired or cleared by scene/clock
                 {
-                    _buffCount--;
-                    _buffIds[i] = _buffIds[_buffCount];
-                    _buffExpireAt[i] = _buffExpireAt[_buffCount];
-                    continue;
+                    if (cb == null)
+                    {
+                        player.buffPart.AddBuff(bid, player);
+                        cb = player.buffPart.GetBuff(bid);
+                    }
+                    if (cb != null)
+                    {
+                        cb.m_nCurCycle = -999999;
+                    }
                 }
-                if (exp > 0f && now >= exp)
+                else // Timed buff
                 {
-                    player.buffPart.ReqRemoveBuff(bid);
-                    _buffCount--;
-                    _buffIds[i] = _buffIds[_buffCount];
-                    _buffExpireAt[i] = _buffExpireAt[_buffCount];
+                    if (cb == null)
+                    {
+                        _buffCount--;
+                        _buffIds[i] = _buffIds[_buffCount];
+                        _buffExpireAt[i] = _buffExpireAt[_buffCount];
+                        continue;
+                    }
+                    if (now >= exp)
+                    {
+                        player.buffPart.ReqRemoveBuff(bid);
+                        _buffCount--;
+                        _buffIds[i] = _buffIds[_buffCount];
+                        _buffExpireAt[i] = _buffExpireAt[_buffCount];
+                    }
+                    else
+                    {
+                        cb.m_nCurCycle = -999999;
+                    }
                 }
-                else
+            }
+        }
+
+        private void MaintainBuffsLAN(LAN.CLanEntity lanPlayer)
+        {
+            if (lanPlayer == null || lanPlayer.buffPart == null || _buffCount == 0) return;
+            float now = Time.realtimeSinceStartup;
+            for (int i = _buffCount - 1; i >= 0; i--)
+            {
+                int bid = _buffIds[i];
+                float exp = _buffExpireAt[i];
+                LAN.CLanBuff cb = lanPlayer.buffPart.GetBuff(bid);
+                if (exp <= 0f) // Permanent buff
                 {
-                    cb.m_nCurCycle = -999999;
+                    if (cb == null)
+                    {
+                        lanPlayer.buffPart.AddBuff(bid, lanPlayer);
+                    }
+                    lanPlayer.buffPart.RecordBuffCycle(bid, -999999);
+                }
+                else // Timed buff
+                {
+                    if (cb == null)
+                    {
+                        _buffCount--;
+                        _buffIds[i] = _buffIds[_buffCount];
+                        _buffExpireAt[i] = _buffExpireAt[_buffCount];
+                        continue;
+                    }
+                    if (now >= exp)
+                    {
+                        lanPlayer.buffPart.RemoveBuff(bid);
+                        _buffCount--;
+                        _buffIds[i] = _buffIds[_buffCount];
+                        _buffExpireAt[i] = _buffExpireAt[_buffCount];
+                    }
+                    else
+                    {
+                        lanPlayer.buffPart.RecordBuffCycle(bid, -999999);
+                    }
                 }
             }
         }
@@ -1171,24 +1352,161 @@ namespace ModBridge
             *(uint*)(b + 0x440) = seq + 1u;
         }
 
+        private unsafe void UpdateSnapshotLAN(LAN.CLanEntity lanPlayer)
+        {
+            byte* b = Shm();
+            if (b == null || lanPlayer == null || lanPlayer.propertyPart == null) return;
+
+            LAN.CLanPropertyPart pp = lanPlayer.propertyPart;
+            int cnt = ALL_PROP_KEYS.Length;
+            if (cnt > 64) cnt = 64;
+            *(int*)(b + 0x444) = cnt;
+            byte* pbase = b + 0x448;
+            for (int i = 0; i < cnt; i++)
+            {
+                int k = ALL_PROP_KEYS[i];
+                int def = (k == 601) ? 1000 : ((k == 1 || k == 52) ? 1 : 0);
+                int cur = pp.GetValue(ePropValueType.AfterCul, k, def);
+                int orig = pp.GetValue(ePropValueType.Original, k, def);
+                int lval = 0;
+                byte lkd = 0;
+                for (int j = 0; j < _lockCount; j++)
+                {
+                    if (_lockKeys[j] == k)
+                    {
+                        lkd = 1;
+                        lval = _lockVals[j];
+                        break;
+                    }
+                }
+                byte* row = pbase + i * 20;
+                *(int*)(row + 0x00) = k;
+                *(int*)(row + 0x04) = cur;
+                *(int*)(row + 0x08) = orig;
+                *(int*)(row + 0x0C) = lval;
+                *(byte*)(row + 0x10) = lkd;
+            }
+
+            // LAN storage boxes count = 0
+            *(int*)(b + 0x948) = 0;
+
+            // Active mod buffs snapshot
+            int bc = _buffCount;
+            if (bc > 64) bc = 64;
+            *(int*)(b + 0xA50) = bc;
+            float now = Time.realtimeSinceStartup;
+            for (int i = 0; i < bc; i++)
+            {
+                byte* brow = b + 0xA58 + i * 8;
+                *(int*)(brow + 0x00) = _buffIds[i];
+                int rem = (_buffExpireAt[i] > 0f) ? Mathf.Max(0, (int)(_buffExpireAt[i] - now)) : -1;
+                *(int*)(brow + 0x04) = rem;
+            }
+
+            uint seq = *(uint*)(b + 0x440);
+            *(uint*)(b + 0x440) = seq + 1u;
+        }
+
         // ==================== #10 Instant Interact ====================
-        private void MaintainInstantInteract(bool on)
+        private void MaintainInstantInteract(bool on, CEntity player, LAN.CLanEntity lanPlayer)
         {
             DGameConfig cfg = DGameConfig.Instance;
-            if (cfg == null) return;
-            if (on)
+            if (cfg != null)
             {
-                if (!_origBackhomeSaved)
+                if (on)
                 {
-                    _origBackhomeTime = cfg.fInputBackhomeTime;
-                    _origBackhomeSaved = true;
+                    if (!_origBackhomeSaved)
+                    {
+                        _origBackhomeTime = cfg.fInputBackhomeTime;
+                        _origBackhomeSaved = true;
+                    }
+                    if (cfg.fInputBackhomeTime != 0f) cfg.fInputBackhomeTime = 0f;
                 }
-                if (cfg.fInputBackhomeTime != 0f) cfg.fInputBackhomeTime = 0f;
+                else if (_origBackhomeSaved)
+                {
+                    cfg.fInputBackhomeTime = _origBackhomeTime;
+                    _origBackhomeSaved = false;
+                }
             }
-            else if (_origBackhomeSaved)
+
+            if (!on) return;
+
+            // Single-player progress-bar tool operations (chopping trees, mining, dismantling furniture)
+            if (player != null)
             {
-                cfg.fInputBackhomeTime = _origBackhomeTime;
-                _origBackhomeSaved = false;
+                try
+                {
+                    CMainCharacter mc = player.GetComponent(typeof(CMainCharacter)) as CMainCharacter;
+                    if (mc != null && mc.m_pCurState != null)
+                    {
+                        CCharacterBehaviorBase beh = mc.m_pCurState.m_pBehavior;
+                        if (beh != null)
+                        {
+                            if (beh is CMainCharacterBehavior_Operate_Tool)
+                            {
+                                if (s_toolDataFi == null)
+                                {
+                                    s_toolDataFi = typeof(CMainCharacterBehavior_Operate_Tool).GetField("m_pData", BindingFlags.Instance | BindingFlags.NonPublic);
+                                }
+                                if (s_toolDataFi != null)
+                                {
+                                    object dObj = s_toolDataFi.GetValue(beh);
+                                    if (dObj is sUIInputOperateData)
+                                    {
+                                        sUIInputOperateData data = (sUIInputOperateData)dObj;
+                                        if (data.pTargetOperatePoint != null)
+                                        {
+                                            data.pTargetOperatePoint.ReduceHP(999999);
+                                            if (data.onFinishCallback != null)
+                                            {
+                                                data.onFinishCallback(data.pTargetOperatePoint, data.inputData);
+                                            }
+                                            MethodInfo miEnd = beh.GetType().GetMethod("End", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                                            if (miEnd != null) miEnd.Invoke(beh, null);
+                                        }
+                                    }
+                                }
+                            }
+                            else if (beh is CMainCharacterBehavior_Operate_Famu || beh is CMainCharacterBehavior_Operate_Caikuang)
+                            {
+                                MethodInfo miEnd = beh.GetType().GetMethod("End", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                                if (miEnd != null) miEnd.Invoke(beh, null);
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // LAN / Solo Challenge operate behaviors
+            if (lanPlayer != null)
+            {
+                try
+                {
+                    LAN.CLanMainCharacter lmc = lanPlayer.GetComponent(typeof(LAN.CLanMainCharacter)) as LAN.CLanMainCharacter;
+                    if (lmc != null && lmc.GetStateID() == 4) // State 4 is Operate
+                    {
+                        FieldInfo fCur = typeof(LAN.CLanCharacterBase).GetField("m_pCurState", BindingFlags.Instance | BindingFlags.NonPublic);
+                        if (fCur != null)
+                        {
+                            object curSt = fCur.GetValue(lmc);
+                            if (curSt != null)
+                            {
+                                FieldInfo fBeh = curSt.GetType().GetField("m_pBehavior", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                                if (fBeh != null)
+                                {
+                                    object lbeh = fBeh.GetValue(curSt);
+                                    if (lbeh != null)
+                                    {
+                                        MethodInfo miEnd = lbeh.GetType().GetMethod("End", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                                        if (miEnd != null) miEnd.Invoke(lbeh, null);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
             }
         }
 
@@ -1421,9 +1739,9 @@ namespace ModBridge
         }
 
         // ==================== #12 Noclip (Collider2D.isTrigger) ====================
-        private void MaintainNoclip(CEntity player, bool on)
+        private void MaintainNoclip(GameObject go, bool on)
         {
-            if (!on || player == null)
+            if (!on || go == null)
             {
                 if (_noclipActive && _noclipCols != null)
                 {
@@ -1432,15 +1750,15 @@ namespace ModBridge
                         if (_noclipCols[i] != null) _noclipCols[i].isTrigger = false;
                     }
                     _noclipCols = null;
-                    _noclipPlayer = null;
+                    _noclipGo = null;
                     _noclipActive = false;
                 }
                 return;
             }
 
-            if (_noclipPlayer != player || !_noclipActive || (_tick % 20u) == 0u)
+            if (_noclipGo != go || !_noclipActive || (_tick % 20u) == 0u)
             {
-                if (_noclipPlayer != player && _noclipCols != null)
+                if (_noclipGo != go && _noclipCols != null)
                 {
                     for (int i = 0; i < _noclipCols.Length; i++)
                     {
@@ -1449,7 +1767,7 @@ namespace ModBridge
                     _noclipCols = null;
                 }
 
-                Component[] raw = player.gameObject.GetComponentsInChildren(typeof(Collider2D), true);
+                Component[] raw = go.GetComponentsInChildren(typeof(Collider2D), true);
                 if (raw != null && raw.Length > 0)
                 {
                     List<Collider2D> toggled = (_noclipCols != null) ? new List<Collider2D>(_noclipCols) : new List<Collider2D>();
@@ -1465,7 +1783,7 @@ namespace ModBridge
                     }
                     _noclipCols = toggled.ToArray();
                 }
-                _noclipPlayer = player;
+                _noclipGo = go;
                 _noclipActive = true;
             }
         }
@@ -1561,6 +1879,64 @@ namespace ModBridge
 
             CMainCharacterBehavior_Attack_FeiBiao b18 = beh as CMainCharacterBehavior_Attack_FeiBiao;
             if (b18 != null) { b18.m_bAttackDo = false; b18.fChargePercent = 1f; b18.Attack(); return; }
+        }
+
+        private void MaintainMachineGunLAN(LAN.CLanEntity lanPlayer, uint mgRateX10)
+        {
+            LAN.CLanMainCharacter mc = lanPlayer.GetComponent(typeof(LAN.CLanMainCharacter)) as LAN.CLanMainCharacter;
+            if (mc == null) return;
+            if (mc.GetStateID() != 3) return; // State 3 is Attack
+
+            try
+            {
+                UnityEngine.Object[] sticks = UnityEngine.Object.FindObjectsOfType(typeof(CUIJoystick));
+                if (sticks != null)
+                {
+                    for (int i = 0; i < sticks.Length; i++)
+                    {
+                        CUIJoystick j = sticks[i] as CUIJoystick;
+                        if (j != null && j.m_bPointerDown && j.m_bEnterCancel) return;
+                    }
+                }
+            }
+            catch { }
+
+            float now = Time.realtimeSinceStartup;
+            if (now < _nextMgFireTime) return;
+            float interval = 10f / (float)mgRateX10;
+            _nextMgFireTime = now + interval;
+
+            FieldInfo fCur = typeof(LAN.CLanCharacterBase).GetField("m_pCurState", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (fCur == null) return;
+            object st = fCur.GetValue(mc);
+            if (st == null) return;
+            FieldInfo fBeh = st.GetType().GetField("m_pBehavior", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            if (fBeh == null) return;
+            LAN.CLanCharacterBehaviorBase beh = fBeh.GetValue(st) as LAN.CLanCharacterBehaviorBase;
+            if (beh == null) return;
+            try
+            {
+                FireRangedBehaviorLAN(beh);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[ModBridge] MG LAN fire ex: " + ex.Message);
+            }
+        }
+
+        private static void FireRangedBehaviorLAN(LAN.CLanCharacterBehaviorBase beh)
+        {
+            Type t = beh.GetType();
+            FieldInfo fCharge = t.GetField("fChargePercent", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            if (fCharge != null) fCharge.SetValue(beh, 1f);
+            FieldInfo fAttackDo = t.GetField("m_bAttackDo", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            if (fAttackDo != null) fAttackDo.SetValue(beh, false);
+
+            MethodInfo mi = t.GetMethod("Attack", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (mi != null)
+            {
+                mi.Invoke(beh, null);
+            }
         }
 
         // ==================== #4 Dynamic Item / Buff / Icon Exporter ====================
@@ -1943,6 +2319,348 @@ namespace ModBridge
             outBuf[zp + 4] = (byte)'I'; outBuf[zp + 5] = (byte)'E'; outBuf[zp + 6] = (byte)'N'; outBuf[zp + 7] = (byte)'D';
             WriteBE32(outBuf, zp + 8, 0xAE426082u);
             return outBuf;
+        }
+
+        // ==================== #14 Warehouse Deletion & Dynamic JSON ====================
+        private int CmdDeleteWarehouseItem(IGameSystem gs, int delCount, long boxId, ulong matUID)
+        {
+            if (gs == null || gs.homeContainerSystem == null || gs.materialSystem == null)
+            {
+                SetStatus(-2, "Warehouse system not ready");
+                return -2;
+            }
+            CHomeContainerSystem hcs = gs.homeContainerSystem as CHomeContainerSystem;
+            if (hcs == null)
+            {
+                SetStatus(-2, "HomeContainerSystem null");
+                return -2;
+            }
+            CHomeContainer hc = hcs.TryGetContainer(boxId);
+            if (hc == null)
+            {
+                SetStatus(-3, "Box container not found: " + boxId.ToString());
+                return -3;
+            }
+            CMaterial mat = gs.materialSystem.GetMaterialByUID(matUID);
+            if (mat == null)
+            {
+                SetStatus(-4, "Material not found: " + matUID.ToString());
+                return -4;
+            }
+            string matName = (mat.pConfig != null) ? mat.pConfig.szStringName : "Item";
+            int actualDel = 0;
+            if (delCount <= 0 || delCount >= mat.nNumber)
+            {
+                actualDel = mat.nNumber;
+                hc.RemoveMaterial(matUID);
+                gs.materialSystem.DestroyMaterial(matUID, true);
+            }
+            else
+            {
+                actualDel = delCount;
+                mat.SetNum(mat.nNumber - delCount, true);
+            }
+
+            try
+            {
+                CUIBase boxUI = (CUIMgr.Instance != null) ? CUIMgr.Instance.GetWnd(CUIDefine.eUIWnd.UI_Game_Home_StorageBox) : null;
+                if (boxUI != null && boxUI.IsVisable())
+                {
+                    MethodInfo mi = boxUI.GetType().GetMethod("RefreshStorageBox", BindingFlags.Instance | BindingFlags.NonPublic);
+                    if (mi != null) mi.Invoke(boxUI, null);
+                }
+            }
+            catch { }
+
+            ExportDynWarehouse(gs);
+            SetStatus(1, "Deleted " + actualDel.ToString() + "x " + matName);
+            return 1;
+        }
+
+        private unsafe void ExportDynWarehouse(IGameSystem gs)
+        {
+            if (gs == null || gs.homeContainerSystem == null || gs.materialSystem == null) return;
+            CHomeContainerSystem hcs = gs.homeContainerSystem as CHomeContainerSystem;
+            if (hcs == null || hcs.m_dicContainer == null) return;
+            byte* b = Shm();
+            if (b == null) return;
+            string dir = ReadShmDynDir(b);
+            if (string.IsNullOrEmpty(dir)) return;
+
+            try
+            {
+                StringBuilder sb = new StringBuilder(4096);
+                sb.Append('[');
+                bool first = true;
+                foreach (KeyValuePair<long, CHomeContainer> kv in hcs.m_dicContainer)
+                {
+                    long boxId = kv.Key;
+                    CHomeContainer hc = kv.Value;
+                    if (hc == null) continue;
+                    List<ulong> uids = hc.GetMaterialUIDList();
+                    if (uids == null) continue;
+                    for (int i = 0; i < uids.Count; i++)
+                    {
+                        ulong uid = uids[i];
+                        CMaterial m = gs.materialSystem.GetMaterialByUID(uid);
+                        if (m == null || m.pConfig == null || m.nNumber <= 0) continue;
+                        if (!first) sb.Append(',');
+                        first = false;
+                        sb.Append("{\"boxId\":").Append(boxId.ToString())
+                          .Append(",\"uid\":").Append(uid.ToString())
+                          .Append(",\"id\":").Append(m.nConfigID.ToString())
+                          .Append(",\"name\":\"").Append(JsonEsc(m.pConfig.szStringName))
+                          .Append("\",\"num\":").Append(m.nNumber.ToString())
+                          .Append(",\"end\":").Append(m.nEndurance.ToString())
+                          .Append(",\"icon\":\"").Append(JsonEsc(m.pConfig.szIcon ?? ""))
+                          .Append("\"}");
+                    }
+                }
+                sb.Append(']');
+                WriteAtomicText(dir + "/dyn_warehouse.json", sb.ToString());
+            }
+            catch { }
+        }
+
+        // ==================== #15 Native Currency System ====================
+        private int CmdSetCurrency(IGameSystem gs, int type, int val)
+        {
+            if (gs == null || gs.paySystem == null) return -2;
+            CPaySystem ps = gs.paySystem as CPaySystem;
+            if (ps == null) return -2;
+            if (val < 0) val = 0;
+            if (type == 0) ps.SetDiamondNum(val);
+            else if (type == 1) ps.SetGardenCoinNum(val);
+            else if (type == 2) ps.SetGardenPointNum(val);
+            else if (type == 3) ps.SetCumulativePayment(val);
+            ExportDynCurrency(gs);
+            SetStatus(1, "Currency type " + type.ToString() + "=" + val.ToString());
+            return 1;
+        }
+
+        private unsafe void ExportDynCurrency(IGameSystem gs)
+        {
+            if (gs == null || gs.paySystem == null) return;
+            CPaySystem ps = gs.paySystem as CPaySystem;
+            if (ps == null) return;
+            byte* b = Shm();
+            if (b == null) return;
+            string dir = ReadShmDynDir(b);
+            if (string.IsNullOrEmpty(dir)) return;
+
+            try
+            {
+                string json = "{\"diamond\":" + ps.GetDiamondNum().ToString() +
+                              ",\"gardenCoin\":" + ps.GetGardenCoinNum().ToString() +
+                              ",\"gardenPoint\":" + ps.GetGardenPointNum().ToString() +
+                              ",\"cumulativePayment\":" + ps.GetCumulativePayment().ToString() + "}";
+                WriteAtomicText(dir + "/dyn_currency.json", json);
+            }
+            catch { }
+        }
+
+        // ==================== #16 Sewer / Cave Full Brightness ====================
+        private void MaintainSewerHighlight(bool on)
+        {
+            try
+            {
+                CDayAndNightSceneDisplay dnd = CDayAndNightSceneDisplay.Instance;
+                if (dnd == null) return;
+                if (dnd.m_pWorkingRoot != null && dnd.m_pWorkingRoot.activeSelf == on)
+                {
+                    dnd.m_pWorkingRoot.SetActive(!on);
+                }
+                FieldInfo fBg = typeof(CDayAndNightSceneDisplay).GetField("m_pImageBG", BindingFlags.Instance | BindingFlags.Public);
+                if (fBg != null)
+                {
+                    Component comp = fBg.GetValue(dnd) as Component;
+                    if (comp != null && comp.gameObject.activeSelf == on)
+                    {
+                        comp.gameObject.SetActive(!on);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        // ==================== #17 Always Open Limited-Time Events ====================
+        private void MaintainAlwaysEvents(bool on)
+        {
+            if (!on) return;
+            try
+            {
+                CAccountMgr acc = CAccountMgr.Instance;
+                if (acc != null)
+                {
+                    long dayKey = (DateTime.Now - DateTime.MinValue).Days;
+                    for (int i = 1; i <= 64; i++)
+                    {
+                        acc.AddOpenType(dayKey, (HotfixDNetWork.EOpenType_ID)i);
+                    }
+                }
+
+                UnityEngine.Object[] rawWks = UnityEngine.Object.FindObjectsOfType(typeof(CActivator_Weekend));
+                if (rawWks != null)
+                {
+                    for (int i = 0; i < rawWks.Length; i++)
+                    {
+                        CActivator_Weekend w = rawWks[i] as CActivator_Weekend;
+                        if (w != null)
+                        {
+                            w.m_bOnlyShowInWeekend = false;
+                            if (!w.gameObject.activeSelf) w.gameObject.SetActive(true);
+                        }
+                    }
+                }
+
+                if (CClientGlobal.Instance != null && CClientGlobal.Instance.GetGameDataCenter != null)
+                {
+                    CActivityOverviewConfigLoader actLoader = CClientGlobal.Instance.GetGameDataCenter.GetConfigLoader<CActivityOverviewConfigLoader>(eGameConfigType.ActivityOverview);
+                    if (actLoader != null)
+                    {
+                        FieldInfo fSorted = typeof(CActivityOverviewConfigLoader).GetField("m_listSorted", BindingFlags.Instance | BindingFlags.NonPublic);
+                        if (fSorted != null)
+                        {
+                            List<sActivityOverviewConfig> configs = fSorted.GetValue(actLoader) as List<sActivityOverviewConfig>;
+                            if (configs != null)
+                            {
+                                PropertyInfo pOpen = typeof(sActivityOverviewConfig).GetProperty("OpenDay");
+                                PropertyInfo pEnd = typeof(sActivityOverviewConfig).GetProperty("EndDay");
+                                for (int i = 0; i < configs.Count; i++)
+                                {
+                                    if (pOpen != null && pOpen.CanWrite) pOpen.SetValue(configs[i], DateTime.MinValue, null);
+                                    if (pEnd != null && pEnd.CanWrite) pEnd.SetValue(configs[i], DateTime.MaxValue, null);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        // ==================== #18 Phonograph Local MP3 Music ====================
+        private void MaintainPhonograph(bool on)
+        {
+            try
+            {
+                CPhonograph ph = UnityEngine.Object.FindObjectOfType(typeof(CPhonograph)) as CPhonograph;
+                if (ph == null)
+                {
+                    StopLocalMusic();
+                    return;
+                }
+
+                if (on)
+                {
+                    if ((_tick % 180u) == 0u || ph.m_listMusic.Find(m => m.nMusicID >= 88000) == null)
+                    {
+                        InjectLocalMusic(ph);
+                    }
+
+                    int curMusicId = PlayerPrefs.GetInt(DPlayerPrefs.PHONOGRAPH_MUSICID, 0);
+                    if (curMusicId >= 88000)
+                    {
+                        CPhonograph.sMusicData match = ph.m_listMusic.Find(m => m.nMusicID == curMusicId);
+                        if (match != null && !string.IsNullOrEmpty(match.szFileName))
+                        {
+                            if (_playingMp3Path != match.szFileName)
+                            {
+                                PlayLocalMusic(match.szFileName);
+                            }
+                            Component anim = ph.GetComponent("Animator");
+                            if (anim != null) anim.SendMessage("Play", "liushengji_playing");
+                        }
+                        else
+                        {
+                            StopLocalMusic();
+                        }
+                    }
+                    else
+                    {
+                        StopLocalMusic();
+                    }
+                }
+                else
+                {
+                    StopLocalMusic();
+                    ph.m_listMusic.RemoveAll(m => m.nMusicID >= 88000);
+                }
+            }
+            catch { }
+        }
+
+        private void InjectLocalMusic(CPhonograph ph)
+        {
+            try
+            {
+                string[] dirs = new string[] { "/sdcard/Music", "/sdcard/AresMod/Music" };
+                List<string> mp3Files = new List<string>();
+                for (int d = 0; d < dirs.Length; d++)
+                {
+                    if (!Directory.Exists(dirs[d]))
+                    {
+                        try { Directory.CreateDirectory(dirs[d]); } catch { }
+                    }
+                    if (Directory.Exists(dirs[d]))
+                    {
+                        string[] files = Directory.GetFiles(dirs[d], "*.mp3");
+                        if (files != null)
+                        {
+                            for (int f = 0; f < files.Length; f++)
+                            {
+                                if (!mp3Files.Contains(files[f])) mp3Files.Add(files[f]);
+                            }
+                        }
+                    }
+                }
+
+                ph.m_listMusic.RemoveAll(m => m.nMusicID >= 88000);
+                for (int i = 0; i < mp3Files.Count; i++)
+                {
+                    CPhonograph.sMusicData m = new CPhonograph.sMusicData();
+                    m.nMusicID = 88000 + i;
+                    m.nMaterialID = 0;
+                    m.szMusicName = "[本地] " + Path.GetFileNameWithoutExtension(mp3Files[i]);
+                    m.szFileName = mp3Files[i];
+                    ph.m_listMusic.Add(m);
+                }
+            }
+            catch { }
+        }
+
+        private void PlayLocalMusic(string path)
+        {
+            StopLocalMusic();
+            try
+            {
+                _mediaPlayer = new AndroidJavaObject("android.media.MediaPlayer");
+                _mediaPlayer.Call("setDataSource", path);
+                _mediaPlayer.Call("setLooping", true);
+                _mediaPlayer.Call("prepare");
+                _mediaPlayer.Call("start");
+                _playingMp3Path = path;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[ModBridge] MediaPlayer failed: " + ex.Message);
+                _playingMp3Path = null;
+            }
+        }
+
+        private void StopLocalMusic()
+        {
+            if (_mediaPlayer != null)
+            {
+                try
+                {
+                    _mediaPlayer.Call("stop");
+                    _mediaPlayer.Call("release");
+                }
+                catch { }
+                _mediaPlayer = null;
+            }
+            _playingMp3Path = null;
         }
     }
 }
