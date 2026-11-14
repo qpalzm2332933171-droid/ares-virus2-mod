@@ -3,8 +3,26 @@
 *.apk.idsig
 *.aab
 
-# Local reverse-engineering & NDK/SDK toolchains (installed locally in tools/)
+# Standalone Online Edition repo (managed in its own private repository)
+/AresModMenu_online/
+
+# Local reverse-engineering & NDK/SDK toolchains + extracted game binaries/dumps
 /tools/
+/codes_2214.bundle/
+/codes_2214_dlls/
+/codes_2214_extracted/
+/extracted_2214/
+Assembly-CSharp.pub.dll
+codes_2214_dec.bundle
+GameWorld.db
+GameWorld_dec.sqlite
+Material.csv
+manifest_2214.bytes
+peizhi_csv_dec.bundle
+peizhi_csv_enc.bundle
+updatelog_enc.bundle
+dyn_buffs_current.json
+dyn_items_current.json
 
 # Android & NDK intermediate build directories
 AresModMenu/build/

@@ -74,8 +74,8 @@ import java.util.concurrent.Executors;
  */
 public final class ModConsole {
 
-    public static final String CURRENT_VERSION_NAME = "v1.2.0";
-    public static final int CURRENT_VERSION_CODE = 6;
+    public static final String CURRENT_VERSION_NAME = "v1.2.1";
+    public static final int CURRENT_VERSION_CODE = 7;
     private static boolean s_hasCheckedUpdateOnLaunch = false;
 
     private void checkUpdate(final boolean manual) {
@@ -505,6 +505,7 @@ public final class ModConsole {
     private int lastToastBuffCnt = -1;
     private boolean manualDynSyncRequested = false;
     private boolean initialBridgeSynced = false;
+    private boolean suppressToggleCallbacks = false;
     private boolean apkIconsWritten = false;
 
     private Runnable propSnapshotRefreshHook = null;
@@ -521,6 +522,7 @@ public final class ModConsole {
         this.curThemeIdx = Math.max(0, Math.min(THEMES.length - 1, modPrefs.getInt("theme_idx", 0)));
         this.curTheme = THEMES[this.curThemeIdx];
 
+        Preferences.loadPrefBool("Save feature preferences", -1, true);
         this.flagAC = Preferences.loadPrefBool("全代码拦截作弊检验/上报/封号", 60, true);
         this.flagBlockCloud = Preferences.loadPrefBool("100%拦截云存档上传", 84, true);
         this.flagAmmo = Preferences.loadPrefBool("子弹不减反增", 40, false);
@@ -1367,8 +1369,10 @@ public final class ModConsole {
             String st = obj.optString("status", "");
             long dynSeq = obj.optLong("dynSeq", 0);
 
+            boolean syncedJustNow = false;
             if (ready && !initialBridgeSynced) {
                 initialBridgeSynced = true;
+                syncedJustNow = true;
                 syncAllFlagsToNative();
                 File filesDir = ctx.getFilesDir();
                 if (filesDir != null) Menu.NativeQuery(12, 1, 0, 0L, filesDir.getAbsolutePath());
@@ -1405,8 +1409,8 @@ public final class ModConsole {
                 });
             }
 
-            // Pull flags from shm after initial sync
-            if (initialBridgeSynced) {
+            // Pull flags from shm after initial sync (skip this tick if we just pushed initial flags)
+            if (initialBridgeSynced && !syncedJustNow) {
                 flagAC = obj.optInt("ac", 1) != 0;
                 flagBlockCloud = obj.optInt("blockCloud", 1) != 0;
                 flagAmmo = obj.optInt("ammo", 0) != 0;
@@ -1526,6 +1530,41 @@ public final class ModConsole {
         }, 120);
     }
 
+    private void saveAllFeatureSwitchesToPrefs() {
+        Preferences.changeFeatureBool("全代码拦截作弊检验/上报/封号", 60, flagAC);
+        Preferences.changeFeatureBool("100%拦截云存档上传", 84, flagBlockCloud);
+        Preferences.changeFeatureBool("子弹不减反增", 40, flagAmmo);
+        Preferences.changeFeatureBool("锁定武器/装备耐久", 41, flagEndur);
+        Preferences.changeFeatureBool("一键解锁全部付费道具", 70, flagPaid);
+        Preferences.changeFeatureBool("关闭交互时间", 71, flagInstant);
+        Preferences.changeFeatureBool("无限堆叠(仓库)", 72, flagInfStack);
+        Preferences.changeFeatureBool("穿墙模式", 73, flagNoclip);
+        Preferences.changeFeatureBool("机关枪模式", 74, flagMG);
+        Preferences.changeFeatureBool("下水道高亮", 81, flagSewer);
+        Preferences.changeFeatureBool("限时活动开放", 82, flagEvent);
+        Preferences.changeFeatureBool("留声机播放本地音乐", 83, flagPhono);
+        Preferences.changeFeatureInt("机关枪连发速度", 75, mgRateX10);
+    }
+
+    public void ensureBridgeSynced() {
+        if (initialBridgeSynced) return;
+        try {
+            String raw = Menu.NativeQuery(1, 0, 0, 0L, "");
+            if (raw == null || raw.isEmpty() || !raw.startsWith("{")) return;
+            JSONObject obj = new JSONObject(raw);
+            if (obj.optInt("ready", 0) != 0) {
+                initialBridgeSynced = true;
+                syncAllFlagsToNative();
+                File filesDir = ctx.getFilesDir();
+                if (filesDir != null) Menu.NativeQuery(12, 1, 0, 0L, filesDir.getAbsolutePath());
+            }
+            int cid = obj.optInt("cid", 0);
+            if (cid != 0 && obj.optInt("scene", 0) != 0) {
+                scheduleAutoRestoreProps(cid);
+            }
+        } catch (Throwable ignored) {}
+    }
+
     private void syncAllFlagsToNative() {
         XposedEntry.antiCheatEnabled = flagAC;
         Menu.NativeQuery(10, 0, flagAC ? 1 : 0, 0L, "");
@@ -1545,7 +1584,13 @@ public final class ModConsole {
 
     private void safeSetChecked(Switch sw, boolean checked) {
         if (sw != null && sw.isChecked() != checked) {
-            sw.setChecked(checked);
+            boolean prev = suppressToggleCallbacks;
+            suppressToggleCallbacks = true;
+            try {
+                sw.setChecked(checked);
+            } finally {
+                suppressToggleCallbacks = prev;
+            }
         }
     }
 
@@ -3545,7 +3590,12 @@ public final class ModConsole {
 
         final Switch sw = new Switch(ctx);
         sw.setChecked(initialVal);
-        sw.setOnCheckedChangeListener(listener);
+        sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                if (suppressToggleCallbacks || listener == null) return;
+                listener.onCheckedChanged(b, isOn);
+            }
+        });
         row.addView(sw);
         if (outSw != null && outSw.length > 0) outSw[0] = sw;
 
@@ -3833,6 +3883,7 @@ public final class ModConsole {
         swMG.setChecked(flagMG);
         swMG.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                if (suppressToggleCallbacks) return;
                 flagMG = isOn;
                 Preferences.changeFeatureBool("机关枪模式", 74, flagMG);
                 Menu.NativeQuery(10, 7, flagMG ? 1 : 0, 0L, "");
@@ -4110,12 +4161,20 @@ public final class ModConsole {
         prefCard.addView(tvPrefText);
 
         final Switch sw = new Switch(ctx);
-        sw.setChecked(Preferences.loadPrefBool("Save feature preferences", -1, false));
+        sw.setChecked(Preferences.loadPrefBool("Save feature preferences", -1, true));
         sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                if (suppressToggleCallbacks) return;
+                Preferences.loadPref = isOn;
                 Preferences.changeFeatureBool("Save feature preferences", -1, isOn);
                 Preferences.with(ctx).writeBoolean(-1, isOn);
-                if (!isOn) Preferences.with(ctx).clear();
+                if (!isOn) {
+                    Preferences.with(ctx).clear();
+                    Preferences.with(ctx).writeBoolean(-1, false);
+                    Preferences.loadPref = false;
+                } else {
+                    saveAllFeatureSwitchesToPrefs();
+                }
             }
         });
         prefCard.addView(sw);

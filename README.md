@@ -1,6 +1,6 @@
 # 阿瑞斯病毒2 (Ares Virus 2) — Vector / LSPosed 全功能内置修改器
 
-针对《阿瑞斯病毒2》（当前 Mod 版本：`v1.2.0`，支持热更新自适应与**全渠道/官服通用**：兼容官服 `com.zzonegame.aresvirus2.android`、OPPO `.nearme.gamecenter`、vivo `.vivo`、小米 `.mi`、九游/UC `.aligames`/`.uc`、B站 `.bilibili`、华为 `.huawei`、4399 `.m4399`、TapTap、好游快爆、应用宝等全部包名）打造的 **Vector / LSPosed 模块 (`com.android.support`)**。
+针对《阿瑞斯病毒2》（当前 Mod 版本：`v1.2.1`，支持热更新自适应与**全渠道/官服通用**：兼容官服 `com.zzonegame.aresvirus2.android`、OPPO `.nearme.gamecenter`、vivo `.vivo`、小米 `.mi`、九游/UC `.aligames`/`.uc`、B站 `.bilibili`、华为 `.huawei`、4399 `.m4399`、TapTap、好游快爆、应用宝等全部包名）打造的 **Vector / LSPosed 模块 (`com.android.support`)**。
 
 全部功能均直接通过 **HybridCLR 热更原位 IL 补丁 (`arsmod.dll`) + 独立托管桥接 (`ModBridge.dll`) + Native 共享内存 IPC (`libmodmenu.so`)** 调用游戏原生方法与数据结构实现，不修改本地加密存档文件。
 
@@ -59,8 +59,8 @@
 
 ### 8. 5 套主题风格与诊断设置
 - 支持 `极客赛博蓝`、`暗夜绯红`、`翡翠森境`、`琥珀黑金`、`晨曦极简白` 5 套全局主题一键实时切换与全页面同步（含货币修改页与悬浮球自适应重绘）。
-- 内置 **Mod 独立版本号 (`v1.2.0`) 与国内多镜像更新检测**（启动自动检测非强制提醒 + 诊断设置手动一键检测/下载，无需 VPN）。
-- 诊断设置内置动态配表/图标重扫、快照刷新与悬浮球一键复位。
+- 内置 **Mod 独立版本号 (`v1.2.1`) 与国内多镜像更新检测**（启动自动检测非强制提醒 + 诊断设置手动一键检测/下载，无需 VPN）。
+- 诊断设置内置「自动记住开关状态」默认持久化、动态配表/图标重扫、快照刷新与悬浮球一键复位；已修复首次进入桥接未同步覆盖已保存开关状态及重进游戏未展开菜单不生效的问题。
 
 ---
 

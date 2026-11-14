@@ -12,7 +12,7 @@ public class Preferences {
     private static SharedPreferences sharedPreferences;
     private static Preferences prefsInstance;
     public static Context context;
-    public static boolean loadPref, isExpanded;
+    public static boolean loadPref = true, isExpanded;
 
     private static final String LENGTH = "_length";
     private static final String DEFAULT_STRING_VALUE = "";
@@ -25,27 +25,35 @@ public class Preferences {
     public static native void Changes(Context context, int featNum, String featName, int value, long Lvalue, boolean isOn, String inputText);
 
     public static void changeFeatureInt(String featureName, int featureNum, int value) {
-        Preferences.with(context).writeInt(featureNum, value);
+        if (loadPref || featureNum < 0) {
+            Preferences.with(context).writeInt(featureNum, value);
+        }
         Changes(context, featureNum, featureName, value, 0, false, null);
     }
 
     public static void changeFeatureLong(String featureName, int featureNum, long Lvalue) {
-        Preferences.with(context).writeLong(String.valueOf(featureNum), Lvalue);
+        if (loadPref || featureNum < 0) {
+            Preferences.with(context).writeLong(String.valueOf(featureNum), Lvalue);
+        }
         Changes(context, featureNum, featureName, 0, Lvalue, false, null);
     }
 
     public static void changeFeatureString(String featureName, int featureNum, String inputString) {
-        Preferences.with(context).writeString(featureNum, inputString);
+        if (loadPref || featureNum < 0) {
+            Preferences.with(context).writeString(featureNum, inputString);
+        }
         Changes(context, featureNum, featureName, 0, 0, false, inputString);
     }
 
     public static void changeFeatureBool(String featureName, int featureNum, boolean bool) {
-        Preferences.with(context).writeBoolean(featureNum, bool);
+        if (loadPref || featureNum < 0) {
+            Preferences.with(context).writeBoolean(featureNum, bool);
+        }
         Changes(context, featureNum, featureName, 0, 0, bool, null);
     }
 
     public static int loadPrefInt(String featureName, int featureNum) {
-        if (loadPref) {
+        if (loadPref || featureNum < 0) {
             int value = Preferences.with(context).readInt(featureNum);
             Changes(context, featureNum, featureName, value , 0, false, null);
             return value;
@@ -54,7 +62,7 @@ public class Preferences {
     }
 
     public static long loadPrefLong(String featureName, int featureNum) {
-        if (loadPref) {
+        if (loadPref || featureNum < 0) {
             long Lvalue = Preferences.with(context).readLong(String.valueOf(featureNum));
             Changes(context, featureNum, featureName, 0, Lvalue, false, null);
             return Lvalue;

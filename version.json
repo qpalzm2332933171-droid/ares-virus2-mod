@@ -1,11 +1,11 @@
 {
-  "versionCode": 6,
-  "versionName": "v1.2.0",
-  "changelog": "1. 优化子弹不减反增底层逻辑，直接于开火扣弹处 O(1) 改为加弹，彻底消除连射与机关枪模式卡顿\n2. 全面优化高频轮询与系统日志路径，消除大存档下的帧率掉帧\n3. 修复仓库物品删除与无限堆叠仅识别家具箱的问题，完整支持随身仓库与家园储物箱分组扫描、同属性合并及安全删除\n4. 完善运行期配表动态扫描，完整适配热更新增物品、Buff 与分类标签\n5. 采用 Mod 独立版本号 (v1.2.0) 与国内多镜像直连检测更新，支持启动自动提醒与手动一键下载(无需 VPN)\n6. 新增本地环回网关拦截货币消费服务端校验，支持钻石/游园币/游园积分修改后直接本地消费购买\n7. 反作弊新增 100% 拦截云存档上传（含游园镇自动云存与手动云存），并阻断异常与日志上报",
-  "downloadUrl": "https://gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.0/AresModMenu.apk",
+  "versionCode": 7,
+  "versionName": "v1.2.1",
+  "changelog": "1. 修复「自动记住开关状态」在重进游戏后未能正确恢复与同步至底层的问题（含后台未展开悬浮窗时自动生效与防误覆写）\n2. 优化开关回调保护，避免快照刷新期间状态互相覆盖",
+  "downloadUrl": "https://gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.1/AresModMenu.apk",
   "mirrorUrls": [
-    "https://gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.0/AresModMenu.apk",
-    "https://cdn.gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.0/AresModMenu.apk",
-    "https://hk.gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.0/AresModMenu.apk"
+    "https://gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.1/AresModMenu.apk",
+    "https://cdn.gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.1/AresModMenu.apk",
+    "https://hk.gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.1/AresModMenu.apk"
   ]
 }

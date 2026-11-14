@@ -25,6 +25,7 @@ echo "== 3) aapt2 link 生成 base.apk + R.java =="
 "$BT/aapt2.exe" link -o "$OUT/base.apk" -I "$AJAR" \
     --manifest "$SRC/AndroidManifest.xml" \
     --java "$OUT/gen" \
+    --version-code 7 --version-name "1.2.1" \
     --min-sdk-version 21 --target-sdk-version 36 \
     "$OUT/compiled/res.zip" 2>&1 | tail -10
 

@@ -1208,8 +1208,12 @@ public class Menu {
             @Override
             public void run() {
                 try {
-                    if (mConsole != null && mConsoleView != null && mConsoleView.getVisibility() == View.VISIBLE) {
-                        mConsole.pollSnapshot();
+                    if (mConsole != null && mConsoleView != null) {
+                        if (mConsoleView.getVisibility() == View.VISIBLE) {
+                            mConsole.pollSnapshot();
+                        } else {
+                            mConsole.ensureBridgeSynced();
+                        }
                     }
                 } catch (Throwable ignored) {}
                 if (!stopChecking) ph.postDelayed(this, 1000);
