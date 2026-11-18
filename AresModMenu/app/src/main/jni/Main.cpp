@@ -13,6 +13,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
 #include <string>
 #include <pthread.h>
 #include <thread>
@@ -163,7 +164,7 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
         // Snapshot JSON
         std::string j;
         j.reserve(4096);
-        char head[896];
+        char head[1024];
         uint32_t fl = shm->flags;
         uint32_t mgR = shm->mgRateX10 ? shm->mgRateX10 : 100u;
         std::string stEsc = json_escape(shm->lastStatus);
@@ -171,6 +172,8 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
                  "{\"ready\":%u,\"scene\":%d,\"cid\":%d,\"flags\":%u,"
                  "\"ac\":%d,\"ammo\":%d,\"end\":%d,\"paid\":%d,\"inst\":%d,\"infStk\":%d,\"noclip\":%d,\"mg\":%d,"
                  "\"sewer\":%d,\"event\":%d,\"phono\":%d,\"blockCloud\":%d,"
+                 "\"aim\":%d,\"esp\":%d,\"noShake\":%d,\"aimWall\":%d,\"espBox\":%d,\"espLine\":%d,\"espInfo\":%d,\"espNeu\":%d,\"login7891\":%d,\"randSpawn\":%d,"
+                 "\"aimRange\":%u,\"espLineMode\":%u,"
                  "\"mgRate\":%u,\"dynSeq\":%u,\"tick\":%u,\"cmdRes\":%d,"
                  "\"okCnt\":%u,\"failCnt\":%u,\"lastFailId\":%d,\"pending\":%zu,\"status\":\"%s\",",
                  shm->bridgeReady, shm->sceneReady, shm->currentCid, fl,
@@ -186,6 +189,17 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
                  (fl & MOD_FLAG_ALWAYS_EVENT) ? 1 : 0,
                  (fl & MOD_FLAG_PHONOGRAPH_LOCAL) ? 1 : 0,
                  (fl & MOD_FLAG_CLOUD_ALLOW) ? 0 : 1,
+                 (fl & MOD_FLAG_AIMBOT) ? 1 : 0,
+                 (fl & MOD_FLAG_ESP) ? 1 : 0,
+                 (fl & MOD_FLAG_NOSHAKE) ? 1 : 0,
+                 (fl & MOD_FLAG_AIM_IGNORE_WALL) ? 1 : 0,
+                 (fl & MOD_FLAG_ESP_BOX) ? 1 : 0,
+                 (fl & MOD_FLAG_ESP_LINE) ? 1 : 0,
+                 (fl & MOD_FLAG_ESP_INFO) ? 1 : 0,
+                 (fl & MOD_FLAG_ESP_NEUTRAL) ? 1 : 0,
+                 (fl & MOD_FLAG_LOGIN_7891) ? 1 : 0,
+                 (fl & MOD_FLAG_RANDOM_SPAWN) ? 1 : 0,
+                 shm->aimMaxRangeX10, shm->espLineMode,
                  mgR, shm->dynSeq,
                  shm->tickCount, shm->lastCmdResult,
                  shm->cmdOkCount, shm->cmdFailCount, shm->lastFailArg1, pending, stEsc.c_str());
@@ -315,6 +329,27 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
             ares::il2cpp::mod_set_flag(MOD_FLAG_PHONOGRAPH_LOCAL, on);
         } else if (a1 == 11) {
             ares::il2cpp::mod_set_flag(MOD_FLAG_CLOUD_ALLOW, !on);
+        } else if (a1 == 12) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_AIMBOT, on);
+        } else if (a1 == 13) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_ESP, on);
+        } else if (a1 == 14) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_NOSHAKE, on);
+        } else if (a1 == 15) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_AIM_IGNORE_WALL, on);
+        } else if (a1 == 16) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_ESP_BOX, on);
+        } else if (a1 == 17) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_ESP_LINE, on);
+        } else if (a1 == 18) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_ESP_INFO, on);
+        } else if (a1 == 19) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_ESP_NEUTRAL, on);
+        } else if (a1 == 20) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_LOGIN_7891, on);
+            ares::il2cpp::mod_enqueue_cmd(MOD_CMD_LOGIN_7891_SYNC, on ? 1 : 0, 0, 0, 0);
+        } else if (a1 == 21) {
+            ares::il2cpp::mod_set_flag(MOD_FLAG_RANDOM_SPAWN, on);
         }
         return env->NewStringUTF("1");
     }
@@ -348,11 +383,125 @@ jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong 
         return env->NewStringUTF(ok ? "1" : "0");
     }
     if (op == 16) {
-        // Set currency: a1=type(0=Diamond,1=GardenCoin,2=GardenPoint,3=CumulativePay), a2=val
+        // Set currency: a1=type(0=Diamond,1=GardenCoin,2=GardenPoint,3=CumulativePay), a2=val (<0 clears persist)
         bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_SET_CURRENCY, a1, a2, 0, 0);
         return env->NewStringUTF(ok ? "1" : "0");
     }
+    if (op == 17) {
+        // Aim / ESP config: a1=aimMaxRangeX10 (if >=0), a2=espLineMode (if >=0)
+        if (a1 >= 0) shm->aimMaxRangeX10 = (uint32_t) a1;
+        if (a2 >= 0) shm->espLineMode = (uint32_t) a2;
+        return env->NewStringUTF("1");
+    }
+    if (op == 18) {
+        // Talent / Skill op: a1=subOp, a2=talentOrSkillId, sarg=targetCid ("0"=current player), aL=level
+        int targetCid = sarg.empty() ? 0 : atoi(sarg.c_str());
+        bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_TALENT_OP, a1, a2, targetCid, (int64_t) aL);
+        return env->NewStringUTF(ok ? "1" : "0");
+    }
+    if (op == 19) {
+        // Hire op: a1=hireOp, a2=id, sarg=extra, aL=entityUid
+        int extra = sarg.empty() ? 0 : atoi(sarg.c_str());
+        bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_HIRE_OP, a1, a2, extra, (int64_t) aL);
+        return env->NewStringUTF(ok ? "1" : "0");
+    }
+    if (op == 20) {
+        // Teleport scene: a1=sceneId, a2=spawnPointId (<0=default), aL=flags
+        bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_TELEPORT_SCENE, a1, a2, (int32_t) aL, (int64_t) aL);
+        return env->NewStringUTF(ok ? "1" : "0");
+    }
+    if (op == 21) {
+        // Task op: a1=subOp, a2=eventOrTaskId, sarg=flags, aL=sceneId
+        int flg = sarg.empty() ? 1 : atoi(sarg.c_str());
+        bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_TASK_OP, a1, a2, flg, (int64_t) aL);
+        return env->NewStringUTF(ok ? "1" : "0");
+    }
+    if (op == 22) {
+        // Login 7891 / save sync: a1=subOp(1=sync), a2=forceImportNewest
+        bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_LOGIN_7891_SYNC, a1, a2, 0, 0);
+        return env->NewStringUTF(ok ? "1" : "0");
+    }
+    if (op == 23) {
+        // Spawn entity: a1=subOp(1=spawn,2=clear), a2=unitId, aL=factionOverride(0=native,1=enemy,2=neutral,3=friend)
+        bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_SPAWN_ENTITY, a1, a2, (int32_t) aL, (int64_t) aL);
+        return env->NewStringUTF(ok ? "1" : "0");
+    }
+    if (op == 24) {
+        // Cyber cricket duel: a1=unitIdA, a2=unitIdB, aL=subOp(1=spawn,2=clear)
+        int sub = (aL == 2) ? 2 : 1;
+        bool ok = ares::il2cpp::mod_enqueue_cmd(MOD_CMD_CRICKET_DUEL, sub, a1, a2, (int64_t) aL);
+        return env->NewStringUTF(ok ? "1" : "0");
+    }
     return env->NewStringUTF("{}");
+}
+
+jint NativeGetEsp(JNIEnv *env, jclass clazz, jfloatArray jMeta, jfloatArray jRects, jintArray jInts, jobjectArray jNames) {
+    (void) clazz;
+    ModShm* shm = ares::il2cpp::mod_shm();
+    if (!shm || !(shm->flags & MOD_FLAG_ESP) || shm->sceneReady == 0) return 0;
+
+    ModEspEntity local[MOD_ESP_MAX];
+    int count = 0;
+    float pnx = 0.5f, pny = 0.5f, sw = 0.f, sh = 0.f;
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        uint32_t seq1 = shm->espSeq;
+        if (seq1 & 1u) continue; /* writer active if odd (or double-check stability) */
+        std::atomic_thread_fence(std::memory_order_acquire);
+        int c = shm->espCount;
+        if (c < 0) c = 0;
+        if (c > MOD_ESP_MAX) c = MOD_ESP_MAX;
+        pnx = shm->espPlayerNx;
+        pny = shm->espPlayerNy;
+        sw = shm->espScreenW;
+        sh = shm->espScreenH;
+        if (c > 0) memcpy(local, shm->espEntities, (size_t) c * sizeof(ModEspEntity));
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (shm->espSeq == seq1) { count = c; break; }
+        count = 0;
+    }
+
+    if (jMeta && env->GetArrayLength(jMeta) >= 4) {
+        jfloat meta[4] = { pnx, pny, sw, sh };
+        env->SetFloatArrayRegion(jMeta, 0, 4, meta);
+    }
+    if (count <= 0) return 0;
+
+    if (jRects && env->GetArrayLength(jRects) >= count * 7) {
+        jfloat fbuf[MOD_ESP_MAX * 7];
+        for (int i = 0; i < count; ++i) {
+            int o = i * 7;
+            fbuf[o + 0] = local[i].x1;
+            fbuf[o + 1] = local[i].y1;
+            fbuf[o + 2] = local[i].x2;
+            fbuf[o + 3] = local[i].y2;
+            fbuf[o + 4] = local[i].cx;
+            fbuf[o + 5] = local[i].cy;
+            fbuf[o + 6] = local[i].distM;
+        }
+        env->SetFloatArrayRegion(jRects, 0, count * 7, fbuf);
+    }
+    if (jInts && env->GetArrayLength(jInts) >= count * 5) {
+        jint ibuf[MOD_ESP_MAX * 5];
+        for (int i = 0; i < count; ++i) {
+            int o = i * 5;
+            ibuf[o + 0] = local[i].hp;
+            ibuf[o + 1] = local[i].maxHp;
+            ibuf[o + 2] = local[i].unitId;
+            ibuf[o + 3] = (jint) local[i].hostileType;
+            ibuf[o + 4] = (jint) local[i].onScreen;
+        }
+        env->SetIntArrayRegion(jInts, 0, count * 5, ibuf);
+    }
+    if (jNames && env->GetArrayLength(jNames) >= count) {
+        for (int i = 0; i < count; ++i) {
+            local[i].name[sizeof(local[i].name) - 1] = '\0';
+            jstring js = env->NewStringUTF(local[i].name);
+            env->SetObjectArrayElement(jNames, i, js);
+            if (js) env->DeleteLocalRef(js);
+        }
+    }
+    return count;
 }
 
 // ---------------------------------------------------------------- 回调

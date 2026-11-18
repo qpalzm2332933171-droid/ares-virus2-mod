@@ -26,8 +26,37 @@ public final class OverlayAttach {
 
     public static final String TAG = "AresModMenu";
     private static FrameLayout sHost;
+    private static View sEspView;
 
     private OverlayAttach() {
+    }
+
+    public static void attachEsp(final Activity act, final View esp, final View topView) {
+        if (act == null || esp == null) return;
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            new Handler(Looper.getMainLooper()).post(new Runnable() {
+                @Override public void run() { attachEsp(act, esp, topView); }
+            });
+            return;
+        }
+        try {
+            if (sEspView != null && sEspView != esp) {
+                ViewParent op = sEspView.getParent();
+                if (op instanceof ViewGroup) ((ViewGroup) op).removeView(sEspView);
+            }
+            sEspView = esp;
+            ViewParent p = esp.getParent();
+            if (p == null) {
+                act.addContentView(esp, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+            if (topView != null && topView.getParent() instanceof ViewGroup) {
+                topView.bringToFront();
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "attachEsp failed", t);
+        }
     }
 
     public static void attach(final Activity act, final View menu, final int x, final int y) {

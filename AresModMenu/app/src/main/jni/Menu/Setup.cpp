@@ -22,6 +22,7 @@ int RegisterMenu(JNIEnv *env) {
             //   Handler(Looper.getMainLooper()).post() 调它，是唯一安全入口。
             {OBFUSCATE("ProbeOnMain"),     OBFUSCATE("()V"),                                                                      reinterpret_cast<void *>(ProbeOnMain)},
             {OBFUSCATE("NativeQuery"),     OBFUSCATE("(IIIJLjava/lang/String;)Ljava/lang/String;"),                             reinterpret_cast<void *>(NativeQuery)},
+            {OBFUSCATE("NativeGetEsp"),    OBFUSCATE("([F[F[I[Ljava/lang/String;)I"),                                           reinterpret_cast<void *>(NativeGetEsp)},
     };
 
     jclass clazz = env->FindClass(OBFUSCATE("com/android/support/Menu"));

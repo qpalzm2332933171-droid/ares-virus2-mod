@@ -19,6 +19,7 @@ jobjectArray GetFeatureList(JNIEnv *env, jobject context);
 void ProbeOnMain(JNIEnv *env, jclass clazz);
 
 jstring NativeQuery(JNIEnv *env, jclass clazz, jint op, jint a1, jint a2, jlong aL, jstring str);
+jint NativeGetEsp(JNIEnv *env, jclass clazz, jfloatArray jMeta, jfloatArray jRects, jintArray jInts, jobjectArray jNames);
 
 void Changes(JNIEnv *env, jclass clazz, jobject obj,
              jint featNum, jstring featName, jint value, jlong Lvalue,

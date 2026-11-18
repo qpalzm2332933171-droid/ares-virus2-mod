@@ -74,8 +74,8 @@ import java.util.concurrent.Executors;
  */
 public final class ModConsole {
 
-    public static final String CURRENT_VERSION_NAME = "v1.2.1";
-    public static final int CURRENT_VERSION_CODE = 7;
+    public static final String CURRENT_VERSION_NAME = "v1.4.8";
+    public static final int CURRENT_VERSION_CODE = 10;
     private static boolean s_hasCheckedUpdateOnLaunch = false;
 
     private void checkUpdate(final boolean manual) {
@@ -290,7 +290,51 @@ public final class ModConsole {
     private static final ExecutorService sBgExec = Executors.newSingleThreadExecutor();
     private static volatile List<ItemInfo> sItemsCache = null;
     private static volatile List<BuffInfo> sBuffsCache = null;
+    private static volatile List<TalentInfo> sTalentsCache = null;
+    private static volatile List<HireDefInfo> sHiresCache = null;
+    private static volatile List<WorkerDefInfo> sWorkersCache = null;
+    private static volatile List<UnitDefInfo> sUnitsCache = null;
     private static final Map<Integer, String> sDynSubtypeNames = Collections.synchronizedMap(new HashMap<Integer, String>());
+
+    private static final class TalentLevelInfo {
+        int lv;
+        String param, lname;
+    }
+
+    private static final class TalentInfo {
+        int id, type, prop, rate;
+        String name;
+        final List<TalentLevelInfo> levels = new ArrayList<TalentLevelInfo>();
+        int minLv = 1, maxLv = 1;
+    }
+
+    private static final class HireDefInfo {
+        int id;
+        String name, tpl;
+    }
+
+    private static final class WorkerDefInfo {
+        int id, wtype, hp, price, spd;
+        String name;
+    }
+
+    private static final class UnitDefInfo {
+        int id, cls;
+        String name;
+    }
+
+    private static final class TargetCharInfo {
+        int cid;
+        String name;
+    }
+
+    private static final class NearbyEntityInfo {
+        String uid;
+        int id, camp, hp, maxHp;
+        float dist;
+        boolean tamed;
+        String name;
+    }
 
     private static final class ItemInfo {
         int id, cls, type, bt, bst, prio, end, bp, cantCombine;
@@ -416,11 +460,16 @@ public final class ModConsole {
     private LinearLayout headerBar;
     private LinearLayout sidebarView;
     private View hDivView, vDivView;
-    private TextView tvTitle, tvLivePill, tvDiagText, tvOtherStatus, tvMgRateVal;
+    private TextView tvTitle, tvLivePill, tvDiagText, tvOtherStatus, tvCombatStatus, tvMgRateVal;
     private Button btnHideTop, btnMinTop;
+    private EditText etGlobalSearch;
+    private Button btnClearGlobalSearch;
+    private FrameLayout globalSearchOverlay;
+    private LinearLayout globalSearchCard;
+    private ListView lvGlobalSearch;
 
-    // 8 sidebar tabs: Items / WarehouseDelete / Currency / Props / Buffs / OtherFeatures / Themes / Settings
-    private static final int TAB_COUNT = 8;
+    // 15 sidebar tabs
+    private static final int TAB_COUNT = 15;
     private final FrameLayout[] pages = new FrameLayout[TAB_COUNT];
     private final LinearLayout[] sideBtns = new LinearLayout[TAB_COUNT];
     private final View[] sideBars = new View[TAB_COUNT];
@@ -430,6 +479,7 @@ public final class ModConsole {
     // Toggle states (synced with NativeQuery(10) & Preferences)
     private boolean flagAC = true;
     private boolean flagBlockCloud = true;
+    private boolean flagLogin7891 = false;
     private boolean flagAmmo = false;
     private boolean flagEndur = false;
     private boolean flagPaid = false;
@@ -440,15 +490,108 @@ public final class ModConsole {
     private boolean flagSewer = false;
     private boolean flagEvent = false;
     private boolean flagPhono = false;
+    private boolean flagRandomSpawn = false;
+    private boolean flagAimbot = false;
+    private boolean flagAimIgnoreWall = false;
+    private boolean flagEsp = false;
+    private boolean flagEspBox = true;
+    private boolean flagEspLine = true;
+    private boolean flagEspInfo = true;
+    private boolean flagEspNeutral = false;
+    private boolean flagNoShake = false;
     private int mgRateX10 = 100; // default 10.0 shots/s
+    private int aimMaxRangeX10 = 0; // 0 = unlimited
+    private int espLineMode = 0; // 0=top, 1=center, 2=player
 
-    // Other-Features switch widgets & cardMG
-    private Switch swAC, swBlockCloud, swAmmo, swEndur, swInstant, swInfStack, swNoclip, swSewer, swEvent, swPhono, swPaid, swAutoProps, swMG;
-    private LinearLayout cardMG;
-    private TextView tvMGState;
+    // Combat, Entertainment & Assist/Security switch widgets
+    private Switch swAC, swBlockCloud, swLogin7891, swAmmo, swEndur, swInstant, swInfStack, swNoclip, swSewer, swEvent, swPhono, swRandomSpawn, swPaid, swAutoProps, swMG;
+    private Switch swAimbot, swAimIgnoreWall, swEsp, swEspBox, swEspLine, swEspInfo, swEspNeutral, swNoShake;
+    private LinearLayout cardMG, cardAimbot, cardEsp, cardLogin7891, cardRandomSpawn;
+    private TextView tvMGState, tvAimState, tvAimRangeVal, tvEspState, tvLogin7891State, tvEntStatus, tvCricketState, tvRandomSpawnState;
+    private ScrollView svCombat, svAssist, svEnt;
     private final List<View> otherFeatureRows = new ArrayList<View>();
     private final List<TextView> otherFeatureTitles = new ArrayList<TextView>();
     private final List<TextView> otherFeatureSubs = new ArrayList<TextView>();
+    private final List<Button> hireSubTabBtns = new ArrayList<Button>();
+
+    // Global feature search registry
+    private static class FeatureSearchEntry {
+        String title;
+        String desc;
+        String keywords;
+        String category;
+        int tabIdx;
+        View targetView;
+        ScrollView scrollView;
+        Runnable subAction;
+        int score;
+    }
+    private final List<FeatureSearchEntry> searchRegistry = new ArrayList<FeatureSearchEntry>();
+
+    // Map Teleport & Task Manager models
+    private static class MapEntry {
+        int id;
+        String name;
+        String desc;
+        String us;
+        int belong;
+        int root;
+        int spawn;
+        int cat;
+        int ui;
+        boolean valid;
+        int depth;
+        int childCount;
+        boolean expanded;
+    }
+    private static class TaskEntry {
+        int id;
+        int cf;
+        String name;
+        String desc;
+        String reward;
+        int scene;
+        String sceneName;
+        int root;
+        String rootName;
+        String scenes;
+        int cat;
+        int parent;
+        int depth;
+        String unlockTxt;
+        String finishTxt;
+        String showTxt;
+    }
+    private static final String[] CHAPTER_NAMES = new String[] {
+        "全部", "主线·蝗虫篇", "镇长篇DLC", "尼奥·301篇", "姜娜·回忆篇", "蚁穴·兵封王座", "鹰眼组织篇", "活动玩法", "联机副本"
+    };
+    private static class SpawnUnitInfo {
+        int id;
+        int cls;
+        int wtype;
+        int fac;
+        int camp;
+        int exp;
+        int hp;
+        int hasPrefab;
+        String name;
+        String sub;
+        String desc;
+        String icon;
+    }
+    private static volatile List<SpawnUnitInfo> sSpawnUnitsCache = null;
+    private Runnable unitDynReloadHook = null;
+    private Runnable cricketPickHook = null;
+    private static volatile List<MapEntry> sMapsCache = null;
+    private static volatile List<TaskEntry> sTasksCache = null;
+    private long lastMapStateMtime = -1L;
+    private long lastTaskStateMtime = -1L;
+    private long lastLoginStateMtime = -1L;
+    private Runnable mapDynReloadHook = null;
+    private Runnable taskDynReloadHook = null;
+    private Runnable mapStateRefreshHook = null;
+    private Runnable taskStateRefreshHook = null;
+    private Runnable loginStateRefreshHook = null;
 
     // Warehouse Item Model & Modal
     private static class WarehouseItem {
@@ -470,6 +613,8 @@ public final class ModConsole {
     private Button btnDelModalConfirm, btnDelModalCancel;
     private WarehouseItem delModalItem;
     private Runnable delModalOnConfirm;
+    private FrameLayout noticeModalOverlay;
+    private LinearLayout noticeModalCard;
 
     // Currency values & hooks
     private final int[] liveCurrency = new int[4];
@@ -513,6 +658,8 @@ public final class ModConsole {
     private Runnable itemDynReloadHook = null;
     private Runnable buffActiveRefreshHook = null;
     private Runnable buffDynReloadHook = null;
+    private Runnable talentStateRefreshHook = null;
+    private Runnable hireStateRefreshHook = null;
     private final List<Runnable> themeRefreshHooks = new ArrayList<Runnable>();
 
     public ModConsole(Context ctx, Callbacks cb) {
@@ -525,6 +672,7 @@ public final class ModConsole {
         Preferences.loadPrefBool("Save feature preferences", -1, true);
         this.flagAC = Preferences.loadPrefBool("全代码拦截作弊检验/上报/封号", 60, true);
         this.flagBlockCloud = Preferences.loadPrefBool("100%拦截云存档上传", 84, true);
+        this.flagLogin7891 = Preferences.loadPrefBool("固定7891登录", 128, false);
         this.flagAmmo = Preferences.loadPrefBool("子弹不减反增", 40, false);
         this.flagEndur = Preferences.loadPrefBool("锁定武器/装备耐久", 41, false);
         this.flagPaid = Preferences.loadPrefBool("一键解锁全部付费道具", 70, false);
@@ -535,9 +683,20 @@ public final class ModConsole {
         this.flagSewer = Preferences.loadPrefBool("下水道高亮", 81, false);
         this.flagEvent = Preferences.loadPrefBool("限时活动开放", 82, false);
         this.flagPhono = Preferences.loadPrefBool("留声机播放本地音乐", 83, false);
+        this.flagRandomSpawn = Preferences.loadPrefBool("随机生成敌对生物", 129, false);
+        this.flagAimbot = Preferences.loadPrefBool("自瞄最近敌对", 120, false);
+        this.flagAimIgnoreWall = Preferences.loadPrefBool("自瞄无视掩体", 121, false);
+        this.flagEsp = Preferences.loadPrefBool("绘制透视总开关", 122, false);
+        this.flagEspBox = Preferences.loadPrefBool("绘制方框", 123, true);
+        this.flagEspLine = Preferences.loadPrefBool("绘制射线", 124, true);
+        this.flagEspInfo = Preferences.loadPrefBool("绘制信息血条", 125, true);
+        this.flagEspNeutral = Preferences.loadPrefBool("绘制中立生物", 126, false);
+        this.flagNoShake = Preferences.loadPrefBool("关闭开枪受击震动", 127, false);
         int savedRate = Preferences.loadPrefInt("机关枪连发速度", 75);
         this.mgRateX10 = (savedRate >= 10 && savedRate <= 600) ? savedRate : modPrefs.getInt("mg_rate_x10", 100);
         if (this.mgRateX10 < 10 || this.mgRateX10 > 600) this.mgRateX10 = 100;
+        this.aimMaxRangeX10 = Math.max(0, Math.min(500, modPrefs.getInt("aim_max_range_x10", 0)));
+        this.espLineMode = Math.max(0, Math.min(2, modPrefs.getInt("esp_line_mode", 0)));
         XposedEntry.antiCheatEnabled = this.flagAC;
         loadSavedPropsFromPrefs();
 
@@ -1009,8 +1168,8 @@ public final class ModConsole {
     // ==================== Build Main View ====================
     public View buildView() {
         DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
-        int panelW = Math.min(dm.widthPixels * 90 / 100, dp(780));
-        int panelH = Math.min(dm.heightPixels * 90 / 100, dp(390));
+        int panelW = Math.min(dm.widthPixels * 92 / 100, dp(810));
+        int panelH = Math.min(dm.heightPixels * 92 / 100, dp(410));
 
         backdropView = new FrameLayout(ctx);
         backdropView.setBackgroundColor(curTheme.backdrop);
@@ -1032,33 +1191,46 @@ public final class ModConsole {
         headerBar.setOrientation(LinearLayout.HORIZONTAL);
         headerBar.setGravity(Gravity.CENTER_VERTICAL);
         headerBar.setBackground(makeRoundBox(curTheme.headerBg, 0, 0, dp(12)));
-        headerBar.setPadding(dp(12), dp(5), dp(8), dp(5));
-        headerBar.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+        headerBar.setPadding(dp(10), dp(4), dp(6), dp(4));
+        headerBar.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)));
 
         tvTitle = new TextView(ctx);
-        tvTitle.setText("阿瑞斯病毒2 Mod 控制台");
+        tvTitle.setText("阿瑞斯病毒2 控制台");
         tvTitle.setTextColor(curTheme.textPri);
-        tvTitle.setTextSize(14);
+        tvTitle.setTextSize(13);
         tvTitle.setTypeface(null, Typeface.BOLD);
         headerBar.addView(tvTitle);
 
         tvLivePill = new TextView(ctx);
         tvLivePill.setText("  ● 初始化中...");
         tvLivePill.setTextColor(curTheme.emerald);
-        tvLivePill.setTextSize(11);
-        tvLivePill.setPadding(dp(10), dp(2), dp(8), dp(2));
+        tvLivePill.setTextSize(10.5f);
+        tvLivePill.setPadding(dp(8), dp(2), dp(6), dp(2));
         tvLivePill.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         tvLivePill.setSingleLine(true);
         tvLivePill.setEllipsize(TextUtils.TruncateAt.END);
         headerBar.addView(tvLivePill);
 
-        btnHideTop = makePillBtn("隐藏", curTheme.btnSlate, 28);
+        etGlobalSearch = makeDarkEdit("🔍 搜功能/跳转...", false);
+        etGlobalSearch.setTextSize(11);
+        etGlobalSearch.setPadding(dp(8), dp(2), dp(8), dp(2));
+        LinearLayout.LayoutParams gsLp = new LinearLayout.LayoutParams(dp(145), dp(27));
+        gsLp.setMargins(dp(4), 0, dp(2), 0);
+        headerBar.addView(etGlobalSearch, gsLp);
+
+        btnClearGlobalSearch = makePillBtn("✕", curTheme.btnSlate, 26);
+        btnClearGlobalSearch.setTextSize(10);
+        btnClearGlobalSearch.setPadding(dp(6), 0, dp(6), 0);
+        btnClearGlobalSearch.setVisibility(View.GONE);
+        headerBar.addView(btnClearGlobalSearch);
+
+        btnHideTop = makePillBtn("隐藏", curTheme.btnSlate, 27);
         btnHideTop.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { cb.onHideIcon(); }
         });
         headerBar.addView(btnHideTop);
 
-        btnMinTop = makePillBtn("收起 ✕", curTheme.btnRed, 28);
+        btnMinTop = makePillBtn("收起 ✕", curTheme.btnRed, 27);
         btnMinTop.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { cb.onMinimize(); }
         });
@@ -1077,39 +1249,53 @@ public final class ModConsole {
         body.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         cardRoot.addView(body);
 
-        int sideW = dp(104);
+        int sideW = dp(82);
+        ScrollView sideScroll = new ScrollView(ctx);
+        sideScroll.setVerticalScrollBarEnabled(false);
+        sideScroll.setLayoutParams(new LinearLayout.LayoutParams(sideW, ViewGroup.LayoutParams.MATCH_PARENT));
+        sideScroll.setFillViewport(true);
+
         sidebarView = new LinearLayout(ctx);
         sidebarView.setOrientation(LinearLayout.VERTICAL);
         sidebarView.setBackgroundColor(curTheme.sidebarBg);
-        sidebarView.setPadding(dp(4), dp(6), dp(4), dp(6));
-        sidebarView.setLayoutParams(new LinearLayout.LayoutParams(sideW, ViewGroup.LayoutParams.MATCH_PARENT));
-        body.addView(sidebarView);
+        sidebarView.setPadding(dp(3), dp(3), dp(3), dp(3));
+        sidebarView.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        sideScroll.addView(sidebarView);
+        body.addView(sideScroll);
 
         String[] tabTitles = new String[] {
-            "物品发放", "物品删除", "货币修改", "全部属性", "Buff施加", "其他功能", "主题风格", "诊断设置"
+            "物品发放", "物品删除", "货币修改", "全部属性", "Buff施加",
+            "天赋技能", "战斗辅助", "雇佣随从", "生成实体", "地图传送",
+            "任务管理", "娱乐功能", "保护辅助", "主题风格", "诊断设置"
         };
         for (int i = 0; i < tabTitles.length; i++) {
             final int tIdx = i;
             LinearLayout row = new LinearLayout(ctx);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-            rLp.setMargins(dp(2), dp(2), dp(2), dp(2));
+            LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(26));
+            rLp.setMargins(dp(1), dp(1), dp(1), dp(1));
             row.setLayoutParams(rLp);
 
             View bar = new View(ctx);
-            bar.setLayoutParams(new LinearLayout.LayoutParams(dp(3), dp(22)));
+            bar.setLayoutParams(new LinearLayout.LayoutParams(dp(3), dp(18)));
             row.addView(bar);
 
             TextView lbl = new TextView(ctx);
             lbl.setText(tabTitles[i]);
-            lbl.setTextSize(11.5f);
-            lbl.setPadding(dp(7), 0, dp(3), 0);
+            lbl.setTextSize(13.5f);
+            lbl.setSingleLine(true);
+            lbl.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            lbl.setPadding(dp(4), 0, dp(2), 0);
             lbl.setTypeface(null, Typeface.BOLD);
+            lbl.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
             row.addView(lbl);
 
             row.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { switchTab(tIdx); }
+                @Override public void onClick(View v) {
+                    if (globalSearchOverlay != null) globalSearchOverlay.setVisibility(View.GONE);
+                    switchTab(tIdx);
+                }
             });
 
             sideBtns[i] = row;
@@ -1128,30 +1314,159 @@ public final class ModConsole {
         contentWrap.setPadding(dp(8), dp(6), dp(8), dp(6));
         body.addView(contentWrap);
 
+        searchRegistry.clear();
+        otherFeatureRows.clear();
+        otherFeatureTitles.clear();
+        otherFeatureSubs.clear();
+
         int availContentW = panelW - sideW - dp(18);
         pages[0] = buildItemsPage(availContentW);
         pages[1] = buildWarehouseDeletePage(availContentW);
         pages[2] = buildCurrencyPage();
         pages[3] = buildPropsPage();
         pages[4] = buildBuffsPage();
-        pages[5] = buildOtherFeaturesPage();
-        pages[6] = buildThemesPage();
-        pages[7] = buildSettingsPage();
+        pages[5] = buildTalentSkillPage();
+        pages[6] = buildCombatPage();
+        pages[7] = buildHirePage();
+        pages[8] = buildSpawnEntityPage();
+        pages[9] = buildMapTeleportPage();
+        pages[10] = buildTaskManagerPage();
+        pages[11] = buildEntertainmentPage();
+        pages[12] = buildAssistSecurityPage();
+        pages[13] = buildThemesPage();
+        pages[14] = buildSettingsPage();
 
         for (int i = 0; i < pages.length; i++) {
             pages[i].setVisibility(i == 0 ? View.VISIBLE : View.GONE);
             contentWrap.addView(pages[i], new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
 
+        buildGlobalSearchOverlay(contentWrap);
+        registerExtraGlobalSearchEntries();
+
         buildItemDetailModal();
         backdropView.addView(detailModalOverlay);
         buildWarehouseDeleteModal();
         backdropView.addView(delModalOverlay);
+        buildNoticeModal();
+        backdropView.addView(noticeModalOverlay);
 
         applyTheme(curThemeIdx, false);
         switchTab(0);
         startPoll();
         return backdropView;
+    }
+
+    public void onMenuOpened() {
+        try {
+            if (modPrefs != null && modPrefs.getBoolean("hide_anti_resale_notice", false)) return;
+            if (noticeModalOverlay != null) {
+                noticeModalOverlay.setVisibility(View.VISIBLE);
+                noticeModalOverlay.bringToFront();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private void buildNoticeModal() {
+        noticeModalOverlay = new FrameLayout(ctx);
+        noticeModalOverlay.setBackgroundColor(0x99000000);
+        noticeModalOverlay.setVisibility(View.GONE);
+        noticeModalOverlay.setClickable(true);
+        noticeModalOverlay.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        noticeModalCard = new LinearLayout(ctx);
+        noticeModalCard.setOrientation(LinearLayout.VERTICAL);
+        noticeModalCard.setClickable(true);
+        noticeModalCard.setPadding(dp(16), dp(14), dp(16), dp(12));
+        noticeModalCard.setBackground(makeRoundBox(curTheme.panelBg | 0xFF000000, curTheme.accent, dp(2), dp(12)));
+        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(dp(440), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+        noticeModalOverlay.addView(noticeModalCard, cardLp);
+
+        final TextView tvTitleNotice = new TextView(ctx);
+        tvTitleNotice.setText("禁止倒卖");
+        tvTitleNotice.setTextSize(16f);
+        tvTitleNotice.setTypeface(null, Typeface.BOLD);
+        tvTitleNotice.setTextColor(curTheme.accent);
+        tvTitleNotice.setGravity(Gravity.CENTER_HORIZONTAL);
+        tvTitleNotice.setPadding(0, 0, 0, dp(8));
+        noticeModalCard.addView(tvTitleNotice);
+
+        ScrollView svBody = new ScrollView(ctx);
+        svBody.setVerticalScrollBarEnabled(true);
+        LinearLayout.LayoutParams svLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        svLp.setMargins(0, 0, 0, dp(12));
+
+        final TextView tvBody = new TextView(ctx);
+        tvBody.setText(
+            "mod作者:三角会一半\n"
+            + "本mod完全开源免费,项目地址https://github.com/qpalzm2332933171-droid/ares-virus2-mod,如果你是从别人手中花钱买的,那么恭喜你被骗了\n"
+            + "如果你觉得mod有用,请给作者的github仓库点个star吧!"
+        );
+        tvBody.setTextSize(12.5f);
+        tvBody.setTextColor(curTheme.textPri);
+        tvBody.setSingleLine(false);
+        tvBody.setHorizontallyScrolling(false);
+        tvBody.setLineSpacing(dp(3), 1.15f);
+        tvBody.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        svBody.addView(tvBody);
+        noticeModalCard.addView(svBody, svLp);
+
+        LinearLayout btnRow = new LinearLayout(ctx);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+
+        final Button btnNever = makePillBtn("不再显示", curTheme.btnRed, 32);
+        btnNever.setTextSize(11.5f);
+        btnNever.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                try {
+                    if (modPrefs != null) modPrefs.edit().putBoolean("hide_anti_resale_notice", true).apply();
+                } catch (Throwable ignored) {}
+                noticeModalOverlay.setVisibility(View.GONE);
+            }
+        });
+        btnRow.addView(btnNever);
+
+        final Button btnClose = makePillBtn("关闭", curTheme.btnSlate, 32);
+        btnClose.setTextSize(11.5f);
+        btnClose.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                noticeModalOverlay.setVisibility(View.GONE);
+            }
+        });
+        btnRow.addView(btnClose);
+
+        final Button btnStar = makePillBtn("点个star", curTheme.btnGreen, 32);
+        btnStar.setTextSize(11.5f);
+        btnStar.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                try {
+                    android.content.Intent intent = new android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse("https://github.com/qpalzm2332933171-droid/ares-virus2-mod")
+                    );
+                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                    ctx.startActivity(intent);
+                } catch (Throwable t) {
+                    Toast.makeText(ctx, "请访问: https://github.com/qpalzm2332933171-droid/ares-virus2-mod", Toast.LENGTH_LONG).show();
+                }
+            }
+        });
+        btnRow.addView(btnStar);
+        noticeModalCard.addView(btnRow);
+
+        themeRefreshHooks.add(new Runnable() {
+            @Override public void run() {
+                if (noticeModalCard != null) {
+                    noticeModalCard.setBackground(makeRoundBox(curTheme.panelBg | 0xFF000000, curTheme.accent, dp(2), dp(12)));
+                }
+                tvTitleNotice.setTextColor(curTheme.accent);
+                tvBody.setTextColor(curTheme.textPri);
+                btnNever.setBackground(makeRoundBox(curTheme.btnRed, 0x33FFFFFF, 1, dp(7)));
+                btnClose.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                btnStar.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+            }
+        });
     }
 
     private void buildItemDetailModal() {
@@ -1280,6 +1595,13 @@ public final class ModConsole {
             tvOtherStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
             tvOtherStatus.setTextColor(curTheme.accent);
         }
+        if (tvCombatStatus != null) {
+            tvCombatStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+            tvCombatStatus.setTextColor(curTheme.accent);
+        }
+        if (etGlobalSearch != null) styleEditBox(etGlobalSearch);
+        if (btnClearGlobalSearch != null) btnClearGlobalSearch.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+        if (globalSearchCard != null) globalSearchCard.setBackground(makeRoundBox(curTheme.panelBg | 0xFF000000, curTheme.accent, dp(2), dp(10)));
 
         syncTabButtonsTheme();
         syncToggleCardStyles();
@@ -1345,6 +1667,12 @@ public final class ModConsole {
             }, 120);
         }
         if (idx == 4 && buffActiveRefreshHook != null) buffActiveRefreshHook.run();
+        if (idx == 5 && talentStateRefreshHook != null) talentStateRefreshHook.run();
+        if (idx == 7 && hireStateRefreshHook != null) hireStateRefreshHook.run();
+        if (idx == 8 && unitDynReloadHook != null) unitDynReloadHook.run();
+        if (idx == 9 && mapStateRefreshHook != null) mapStateRefreshHook.run();
+        if (idx == 10 && taskStateRefreshHook != null) taskStateRefreshHook.run();
+        if (idx == 12 && loginStateRefreshHook != null) loginStateRefreshHook.run();
     }
 
     private void startPoll() {
@@ -1391,10 +1719,21 @@ public final class ModConsole {
                         sMissingIcons.clear();
                         final List<ItemInfo> items = loadItems(ctx, true);
                         final List<BuffInfo> buffs = loadBuffs(ctx, true);
+                        loadTalentsAndSkills(ctx, true);
+                        loadHireCatalog(ctx, true);
+                        loadMapsCatalog(ctx, true);
+                        loadTasksCatalog(ctx, true);
+                        loadUnitsCatalog(ctx, true);
                         mainH.post(new Runnable() {
                             @Override public void run() {
                                 if (itemDynReloadHook != null) itemDynReloadHook.run();
                                 if (buffDynReloadHook != null) buffDynReloadHook.run();
+                                if (talentStateRefreshHook != null) talentStateRefreshHook.run();
+                                if (hireStateRefreshHook != null) hireStateRefreshHook.run();
+                                if (unitDynReloadHook != null) unitDynReloadHook.run();
+                                if (mapDynReloadHook != null) mapDynReloadHook.run();
+                                if (taskDynReloadHook != null) taskDynReloadHook.run();
+                                if (loginStateRefreshHook != null) loginStateRefreshHook.run();
                                 boolean countsChanged = (lastToastItemCnt >= 0 && (items.size() != lastToastItemCnt || buffs.size() != lastToastBuffCnt));
                                 lastToastItemCnt = items.size();
                                 lastToastBuffCnt = buffs.size();
@@ -1423,8 +1762,44 @@ public final class ModConsole {
                 flagSewer = obj.optInt("sewer", 0) != 0;
                 flagEvent = obj.optInt("event", 0) != 0;
                 flagPhono = obj.optInt("phono", 0) != 0;
+                flagAimbot = obj.optInt("aim", 0) != 0;
+                flagEsp = obj.optInt("esp", 0) != 0;
+                flagNoShake = obj.optInt("noShake", 0) != 0;
+                flagAimIgnoreWall = obj.optInt("aimWall", 0) != 0;
+                flagEspBox = obj.optInt("espBox", 1) != 0;
+                flagEspLine = obj.optInt("espLine", 1) != 0;
+                flagEspInfo = obj.optInt("espInfo", 1) != 0;
+                flagEspNeutral = obj.optInt("espNeu", 0) != 0;
+                flagLogin7891 = obj.optInt("login7891", 0) != 0;
+                flagRandomSpawn = obj.optInt("randSpawn", 0) != 0;
+                syncEspOverlayToMenu(Menu.getInstance());
             }
             syncToggleCardStyles();
+
+            // Refresh dynamic map/task/login state files automatically whenever mtime advances
+            try {
+                File fDir = ctx.getFilesDir();
+                if (fDir != null) {
+                    File fm = new File(fDir, "dyn_map_state.json");
+                    long mt = fm.exists() ? fm.lastModified() : -1L;
+                    if (mt > 0L && mt != lastMapStateMtime) {
+                        lastMapStateMtime = mt;
+                        if (mapStateRefreshHook != null) mapStateRefreshHook.run();
+                    }
+                    File ft = new File(fDir, "dyn_task_state.json");
+                    long tt = ft.exists() ? ft.lastModified() : -1L;
+                    if (tt > 0L && tt != lastTaskStateMtime) {
+                        lastTaskStateMtime = tt;
+                        if (taskStateRefreshHook != null) taskStateRefreshHook.run();
+                    }
+                    File fl = new File(fDir, "dyn_login_state.json");
+                    long lt = fl.exists() ? fl.lastModified() : -1L;
+                    if (lt > 0L && lt != lastLoginStateMtime) {
+                        lastLoginStateMtime = lt;
+                        if (loginStateRefreshHook != null) loginStateRefreshHook.run();
+                    }
+                }
+            } catch (Throwable ignored) {}
 
             JSONArray props = obj.optJSONArray("props");
             if (props != null) {
@@ -1452,6 +1827,15 @@ public final class ModConsole {
             }
             if (tvOtherStatus != null && !st.isEmpty()) {
                 tvOtherStatus.setText("桥接反馈: " + st);
+            }
+            if (tvCombatStatus != null && !st.isEmpty()) {
+                tvCombatStatus.setText("战斗模块反馈: " + st);
+            }
+            if (tvEntStatus != null && !st.isEmpty()) {
+                tvEntStatus.setText("娱乐模块反馈: " + st);
+            }
+            if (tvCricketState != null && (st.contains("斗蛐蛐") || st.contains("获胜") || st.contains("平局"))) {
+                tvCricketState.setText("当前战况: " + st);
             }
             if (tvDiagText != null) {
                 JSONArray boxes = obj.optJSONArray("boxes");
@@ -1543,7 +1927,23 @@ public final class ModConsole {
         Preferences.changeFeatureBool("下水道高亮", 81, flagSewer);
         Preferences.changeFeatureBool("限时活动开放", 82, flagEvent);
         Preferences.changeFeatureBool("留声机播放本地音乐", 83, flagPhono);
+        Preferences.changeFeatureBool("自瞄最近敌对", 120, flagAimbot);
+        Preferences.changeFeatureBool("自瞄无视掩体", 121, flagAimIgnoreWall);
+        Preferences.changeFeatureBool("绘制透视总开关", 122, flagEsp);
+        Preferences.changeFeatureBool("绘制方框", 123, flagEspBox);
+        Preferences.changeFeatureBool("绘制射线", 124, flagEspLine);
+        Preferences.changeFeatureBool("绘制信息血条", 125, flagEspInfo);
+        Preferences.changeFeatureBool("绘制中立生物", 126, flagEspNeutral);
+        Preferences.changeFeatureBool("关闭开枪受击震动", 127, flagNoShake);
+        Preferences.changeFeatureBool("固定7891登录", 128, flagLogin7891);
+        Preferences.changeFeatureBool("随机生成敌对生物", 129, flagRandomSpawn);
         Preferences.changeFeatureInt("机关枪连发速度", 75, mgRateX10);
+    }
+
+    public void syncEspOverlayToMenu(Menu m) {
+        if (m != null) {
+            m.updateEspView(flagEsp, flagEspBox, flagEspLine, flagEspInfo, espLineMode);
+        }
     }
 
     public void ensureBridgeSynced() {
@@ -1579,7 +1979,19 @@ public final class ModConsole {
         Menu.NativeQuery(10, 8, flagSewer ? 1 : 0, 0L, "");
         Menu.NativeQuery(10, 9, flagEvent ? 1 : 0, 0L, "");
         Menu.NativeQuery(10, 10, flagPhono ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 12, flagAimbot ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 13, flagEsp ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 14, flagNoShake ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 15, flagAimIgnoreWall ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 16, flagEspBox ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 17, flagEspLine ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 18, flagEspInfo ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 19, flagEspNeutral ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 20, flagLogin7891 ? 1 : 0, 0L, "");
+        Menu.NativeQuery(10, 21, flagRandomSpawn ? 1 : 0, 0L, "");
         Menu.NativeQuery(11, mgRateX10, 0, 0L, "");
+        Menu.NativeQuery(17, aimMaxRangeX10, espLineMode, 0L, "");
+        syncEspOverlayToMenu(Menu.getInstance());
     }
 
     private void safeSetChecked(Switch sw, boolean checked) {
@@ -1597,6 +2009,7 @@ public final class ModConsole {
     private void syncToggleCardStyles() {
         safeSetChecked(swAC, flagAC);
         safeSetChecked(swBlockCloud, flagBlockCloud);
+        safeSetChecked(swLogin7891, flagLogin7891);
         safeSetChecked(swAmmo, flagAmmo);
         safeSetChecked(swEndur, flagEndur);
         safeSetChecked(swInstant, flagInstant);
@@ -1608,12 +2021,42 @@ public final class ModConsole {
         safeSetChecked(swPaid, flagPaid);
         safeSetChecked(swAutoProps, flagAutoProps && !savedPropVals.isEmpty());
         safeSetChecked(swMG, flagMG);
+        safeSetChecked(swAimbot, flagAimbot);
+        safeSetChecked(swAimIgnoreWall, flagAimIgnoreWall);
+        safeSetChecked(swEsp, flagEsp);
+        safeSetChecked(swEspBox, flagEspBox);
+        safeSetChecked(swEspLine, flagEspLine);
+        safeSetChecked(swEspInfo, flagEspInfo);
+        safeSetChecked(swEspNeutral, flagEspNeutral);
+        safeSetChecked(swNoShake, flagNoShake);
+        safeSetChecked(swRandomSpawn, flagRandomSpawn);
+        if (cardAimbot != null) {
+            cardAimbot.setBackground(makeRoundBox(flagAimbot ? curTheme.cardOnBg : curTheme.cardBg, flagAimbot ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+        }
+        if (tvAimState != null) {
+            tvAimState.setText(flagAimbot ? "● 自瞄锁定中" : "○ 未开启");
+            tvAimState.setTextColor(flagAimbot ? curTheme.emerald : curTheme.textSec);
+        }
+        if (cardEsp != null) {
+            cardEsp.setBackground(makeRoundBox(flagEsp ? curTheme.cardOnBg : curTheme.cardBg, flagEsp ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+        }
+        if (tvEspState != null) {
+            tvEspState.setText(flagEsp ? "● 绘制透视中" : "○ 未开启");
+            tvEspState.setTextColor(flagEsp ? curTheme.emerald : curTheme.textSec);
+        }
         if (cardMG != null) {
             cardMG.setBackground(makeRoundBox(flagMG ? curTheme.cardOnBg : curTheme.cardBg, flagMG ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
         }
         if (tvMGState != null) {
             tvMGState.setText(flagMG ? "● 机关枪生效中" : "○ 未开启");
             tvMGState.setTextColor(flagMG ? curTheme.emerald : curTheme.textSec);
+        }
+        if (cardRandomSpawn != null) {
+            cardRandomSpawn.setBackground(makeRoundBox(flagRandomSpawn ? curTheme.cardOnBg : curTheme.cardBg, flagRandomSpawn ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+        }
+        if (tvRandomSpawnState != null) {
+            tvRandomSpawnState.setText(flagRandomSpawn ? "● 全图敌对生物随机打乱生效中" : "○ 未开启 (保持原图刷怪)");
+            tvRandomSpawnState.setTextColor(flagRandomSpawn ? curTheme.emerald : curTheme.textSec);
         }
     }
 
@@ -3331,7 +3774,7 @@ public final class ModConsole {
         tpLp.setMargins(0, 0, 0, dp(8));
 
         TextView tvTip = new TextView(ctx);
-        tvTip.setText("原生 CPaySystem 货币修改\n实时同步钻石、游园币、游园积分与累计充值，存档内与游戏商城均生效");
+        tvTip.setText("原生 CPaySystem 货币修改 (已支持本地持久化保留)\n修改或消费后的余额自动保存，重启游戏 / 重新登录均保持生效");
         tvTip.setTextColor(curTheme.accent);
         tvTip.setTextSize(11.5f);
         tvTip.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -3350,6 +3793,20 @@ public final class ModConsole {
             }
         });
         tipCard.addView(btnRefCurr);
+
+        final Button btnClearCurr = makePillBtn("重置全部持久化", curTheme.btnRed, 28);
+        btnClearCurr.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                for (int t = 0; t < 4; t++) Menu.NativeQuery(16, t, -1, 0L, "");
+                Toast.makeText(ctx, "已清除全部持久化货币锁，下次同步恢复服务器原值", Toast.LENGTH_SHORT).show();
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        if (currencyRefreshHook != null) currencyRefreshHook.run();
+                    }
+                }, 150);
+            }
+        });
+        tipCard.addView(btnClearCurr);
         col.addView(tipCard, tpLp);
 
         final String[] names = new String[] { "钻石 (Diamond)", "游园币 (Garden Coin)", "游园积分 (Garden Point)", "累计充值额度 (Cumulative Payment)" };
@@ -3488,6 +3945,22 @@ public final class ModConsole {
             inRow.addView(btnAdd);
             cSlateBtns.add(btnAdd);
 
+            final Button btnResetOne = makePillBtn("取消锁定", curTheme.btnRed, 30);
+            btnResetOne.setTextSize(10f);
+            btnResetOne.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    hideKeyboard(v);
+                    Menu.NativeQuery(16, type, -1, 0L, "");
+                    Toast.makeText(ctx, cName + " 已取消持久化锁定", Toast.LENGTH_SHORT).show();
+                    mainH.postDelayed(new Runnable() {
+                        @Override public void run() {
+                            if (currencyRefreshHook != null) currencyRefreshHook.run();
+                        }
+                    }, 150);
+                }
+            });
+            inRow.addView(btnResetOne);
+
             card.addView(inRow);
             cCards.add(card);
             col.addView(card, cLp);
@@ -3552,7 +4025,1089 @@ public final class ModConsole {
     }
 
     // =========================================================================
-    //  TAB 5: 其他功能 (改版: 普通横向开关项 + 仅机关枪保留卡片与调速滑条)
+    //  动态加载 天赋/技能/雇佣 配置 + TAB 5 (天赋技能) + TAB 6 (雇佣随从)
+    // =========================================================================
+    private static synchronized void loadTalentsAndSkills(Context c, boolean forceReload) {
+        if (sTalentsCache != null && !forceReload) return;
+        List<TalentInfo> tOut = new ArrayList<TalentInfo>(180);
+        try {
+            String raw = readFileText(new File(c.getFilesDir(), "dyn_talents_skills.json"));
+            if (raw.startsWith("{")) {
+                JSONObject root = new JSONObject(raw);
+                JSONArray ta = root.optJSONArray("talents");
+                if (ta != null) {
+                    for (int i = 0; i < ta.length(); i++) {
+                        JSONObject o = ta.optJSONObject(i);
+                        if (o == null) continue;
+                        TalentInfo ti = new TalentInfo();
+                        ti.id = o.optInt("id");
+                        ti.type = o.optInt("type", 1);
+                        ti.prop = o.optInt("prop", 0);
+                        ti.rate = o.optInt("rate", 0);
+                        ti.name = stripGameTags(o.optString("name", "Talent #" + ti.id));
+                        JSONArray la = o.optJSONArray("levels");
+                        ti.minLv = Integer.MAX_VALUE;
+                        ti.maxLv = 1;
+                        if (la != null) {
+                            for (int j = 0; j < la.length(); j++) {
+                                JSONObject lo = la.optJSONObject(j);
+                                if (lo == null) continue;
+                                TalentLevelInfo li = new TalentLevelInfo();
+                                li.lv = lo.optInt("lv", 1);
+                                li.param = stripGameTags(lo.optString("param", ""));
+                                li.lname = stripGameTags(lo.optString("lname", ""));
+                                ti.levels.add(li);
+                                if (li.lv < ti.minLv) ti.minLv = li.lv;
+                                if (li.lv > ti.maxLv) ti.maxLv = li.lv;
+                            }
+                            Collections.sort(ti.levels, new Comparator<TalentLevelInfo>() {
+                                @Override public int compare(TalentLevelInfo a, TalentLevelInfo b) {
+                                    return (a.lv < b.lv) ? -1 : ((a.lv > b.lv) ? 1 : 0);
+                                }
+                            });
+                        }
+                        if (ti.minLv == Integer.MAX_VALUE) ti.minLv = 1;
+                        tOut.add(ti);
+                    }
+                    Collections.sort(tOut, new Comparator<TalentInfo>() {
+                        @Override public int compare(TalentInfo a, TalentInfo b) {
+                            if (a.type != b.type) return (a.type < b.type) ? -1 : 1;
+                            return (a.id < b.id) ? -1 : ((a.id > b.id) ? 1 : 0);
+                        }
+                    });
+                }
+            }
+        } catch (Throwable ignored) {}
+        if (!tOut.isEmpty() || sTalentsCache == null) sTalentsCache = tOut;
+    }
+
+    private static synchronized void loadHireCatalog(Context c, boolean forceReload) {
+        if (sHiresCache != null && sWorkersCache != null && sUnitsCache != null && !forceReload) return;
+        List<HireDefInfo> hOut = new ArrayList<HireDefInfo>(24);
+        List<WorkerDefInfo> wOut = new ArrayList<WorkerDefInfo>(36);
+        List<UnitDefInfo> uOut = new ArrayList<UnitDefInfo>(400);
+        try {
+            String raw = readFileText(new File(c.getFilesDir(), "dyn_hires.json"));
+            if (raw.startsWith("{")) {
+                JSONObject root = new JSONObject(raw);
+                JSONArray ha = root.optJSONArray("hires");
+                if (ha != null) {
+                    for (int i = 0; i < ha.length(); i++) {
+                        JSONObject o = ha.optJSONObject(i);
+                        if (o == null) continue;
+                        HireDefInfo hi = new HireDefInfo();
+                        hi.id = o.optInt("id");
+                        hi.name = stripGameTags(o.optString("name", "Hire #" + hi.id));
+                        hi.tpl = o.optString("tpl", "");
+                        hOut.add(hi);
+                    }
+                }
+                JSONArray wa = root.optJSONArray("workers");
+                if (wa != null) {
+                    for (int i = 0; i < wa.length(); i++) {
+                        JSONObject o = wa.optJSONObject(i);
+                        if (o == null) continue;
+                        WorkerDefInfo wi = new WorkerDefInfo();
+                        wi.id = o.optInt("id");
+                        wi.name = stripGameTags(o.optString("name", "Worker #" + wi.id));
+                        wi.wtype = o.optInt("wtype", 0);
+                        wi.hp = o.optInt("hp", 0);
+                        wi.price = o.optInt("price", 0);
+                        wi.spd = o.optInt("spd", 0);
+                        wOut.add(wi);
+                    }
+                }
+                JSONArray ua = root.optJSONArray("units");
+                if (ua != null) {
+                    for (int i = 0; i < ua.length(); i++) {
+                        JSONObject o = ua.optJSONObject(i);
+                        if (o == null) continue;
+                        UnitDefInfo ui = new UnitDefInfo();
+                        ui.id = o.optInt("id");
+                        ui.cls = o.optInt("cls", 1);
+                        ui.name = stripGameTags(o.optString("name", "Unit #" + ui.id));
+                        uOut.add(ui);
+                    }
+                    Collections.sort(uOut, new Comparator<UnitDefInfo>() {
+                        @Override public int compare(UnitDefInfo a, UnitDefInfo b) {
+                            if (a.cls != b.cls) return (b.cls > a.cls) ? 1 : -1;
+                            return (a.id < b.id) ? -1 : ((a.id > b.id) ? 1 : 0);
+                        }
+                    });
+                }
+            }
+        } catch (Throwable ignored) {}
+        if (!hOut.isEmpty() || sHiresCache == null) sHiresCache = hOut;
+        if (!wOut.isEmpty() || sWorkersCache == null) sWorkersCache = wOut;
+        if (!uOut.isEmpty() || sUnitsCache == null) sUnitsCache = uOut;
+    }
+
+    private static int stepTalentLevel(TalentInfo ti, int curLv, boolean up) {
+        if (ti == null || ti.levels.isEmpty()) {
+            return up ? Math.max(1, curLv + 1) : Math.max(0, curLv - 1);
+        }
+        if (up) {
+            for (int i = 0; i < ti.levels.size(); i++) {
+                int lv = ti.levels.get(i).lv;
+                if (lv > curLv) return lv;
+            }
+            return ti.maxLv;
+        } else {
+            int prev = 0;
+            for (int i = 0; i < ti.levels.size(); i++) {
+                int lv = ti.levels.get(i).lv;
+                if (lv < curLv) prev = lv;
+            }
+            return prev;
+        }
+    }
+
+    private FrameLayout buildTalentSkillPage() {
+        final FrameLayout wrap = new FrameLayout(ctx);
+        LinearLayout root = new LinearLayout(ctx);
+        root.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(root, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        loadTalentsAndSkills(ctx, false);
+
+        final int[] curTypeFilter = new int[] { 0 }; // 0=All, 1=擅长技能(type1), 2=称号(type2), 3=已有
+        final int[] selectedTargetCid = new int[] { 0 };
+        final List<TargetCharInfo> targetsList = new ArrayList<TargetCharInfo>();
+        final Map<Integer, Integer> ownedTalentsForTarget = new HashMap<Integer, Integer>(); // talentId -> lv
+        final Map<Integer, Map<Integer, Integer>> allOwnedTalents = new HashMap<Integer, Map<Integer, Integer>>();
+
+        final List<TalentInfo> filteredTalents = new ArrayList<TalentInfo>();
+
+        // Row 1: Target character spinner + Refresh
+        LinearLayout rTop = new LinearLayout(ctx);
+        rTop.setOrientation(LinearLayout.HORIZONTAL);
+        rTop.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tvModeBadge = new TextView(ctx);
+        tvModeBadge.setText("天赋 / 擅长 / 称号");
+        tvModeBadge.setTextColor(curTheme.accent);
+        tvModeBadge.setTextSize(11.5f);
+        tvModeBadge.setTypeface(null, Typeface.BOLD);
+        rTop.addView(tvModeBadge);
+
+        TextView tvTgtLbl = new TextView(ctx);
+        tvTgtLbl.setText("   对象:");
+        tvTgtLbl.setTextColor(curTheme.textSec);
+        tvTgtLbl.setTextSize(10.5f);
+        rTop.addView(tvTgtLbl);
+
+        final ArrayAdapter<String> tgtAdapter = new ArrayAdapter<String>(ctx, android.R.layout.simple_spinner_item);
+        tgtAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        tgtAdapter.add("当前主角");
+        final Spinner spTarget = new Spinner(ctx);
+        spTarget.setAdapter(tgtAdapter);
+        spTarget.setLayoutParams(new LinearLayout.LayoutParams(0, dp(30), 1f));
+        rTop.addView(spTarget);
+
+        final Button btnRefT = makePillBtn("刷新", curTheme.btnGreen, 28);
+        btnRefT.setTextSize(10f);
+        rTop.addView(btnRefT);
+        root.addView(rTop);
+
+        // Row 2: Search + filter pills
+        LinearLayout rFilter = new LinearLayout(ctx);
+        rFilter.setOrientation(LinearLayout.HORIZONTAL);
+        rFilter.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams fLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        fLp.setMargins(0, dp(3), 0, dp(3));
+
+        final EditText etSearch = makeDarkEdit("搜索名称或 ID...", false);
+        etSearch.setLayoutParams(new LinearLayout.LayoutParams(0, dp(29), 1f));
+        rFilter.addView(etSearch);
+
+        final String[] tfLabels = new String[] { "全部", "擅长技能", "称号", "已有" };
+        final List<Button> tfBtns = new ArrayList<Button>();
+        for (int i = 0; i < tfLabels.length; i++) {
+            final int fi = i;
+            Button fb = makePillBtn(tfLabels[i], i == 0 ? curTheme.btnBlue : curTheme.btnSlate, 26);
+            fb.setTextSize(10f);
+            tfBtns.add(fb);
+            rFilter.addView(fb);
+        }
+        root.addView(rFilter, fLp);
+
+        final TextView tvSummary = new TextView(ctx);
+        tvSummary.setTextColor(curTheme.textSec);
+        tvSummary.setTextSize(10.5f);
+        tvSummary.setPadding(dp(2), 0, dp(2), dp(2));
+        root.addView(tvSummary);
+
+        final ListView lv = new ListView(ctx);
+        lv.setDivider(null);
+        lv.setDividerHeight(0);
+        lv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(lv);
+
+        final class TsHolder {
+            LinearLayout card;
+            ImageView iv;
+            TextView tvTitle, tvSub, tvLv;
+            Button bDec, bAdd, bMax, bDel;
+        }
+
+        final Runnable[] rebuildRef = new Runnable[1];
+        final BaseAdapter adapter = new BaseAdapter() {
+            @Override public int getCount() {
+                return filteredTalents.size();
+            }
+            @Override public Object getItem(int pos) { return pos; }
+            @Override public long getItemId(int pos) { return pos; }
+
+            @Override public View getView(int pos, View convertView, ViewGroup parent) {
+                TsHolder h;
+                if (convertView == null) {
+                    h = new TsHolder();
+                    LinearLayout row = new LinearLayout(ctx);
+                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    row.setGravity(Gravity.CENTER_VERTICAL);
+                    row.setPadding(dp(10), dp(6), dp(10), dp(6));
+
+                    LinearLayout outer = new LinearLayout(ctx);
+                    outer.setOrientation(LinearLayout.VERTICAL);
+                    outer.setPadding(0, dp(2), 0, dp(2));
+                    outer.addView(row, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                    h.iv = new ImageView(ctx);
+                    LinearLayout.LayoutParams ivLp = new LinearLayout.LayoutParams(dp(32), dp(32));
+                    ivLp.setMargins(0, 0, dp(8), 0);
+                    row.addView(h.iv, ivLp);
+
+                    LinearLayout mid = new LinearLayout(ctx);
+                    mid.setOrientation(LinearLayout.VERTICAL);
+                    mid.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                    h.tvTitle = new TextView(ctx);
+                    h.tvTitle.setTextSize(12f);
+                    h.tvTitle.setTypeface(null, Typeface.BOLD);
+                    h.tvTitle.setSingleLine(true);
+                    h.tvTitle.setEllipsize(TextUtils.TruncateAt.END);
+                    mid.addView(h.tvTitle);
+
+                    h.tvSub = new TextView(ctx);
+                    h.tvSub.setTextSize(10f);
+                    h.tvSub.setSingleLine(true);
+                    h.tvSub.setEllipsize(TextUtils.TruncateAt.END);
+                    mid.addView(h.tvSub);
+                    row.addView(mid);
+
+                    h.tvLv = new TextView(ctx);
+                    h.tvLv.setTextSize(11f);
+                    h.tvLv.setTypeface(null, Typeface.BOLD);
+                    h.tvLv.setPadding(dp(4), 0, dp(6), 0);
+                    row.addView(h.tvLv);
+
+                    h.bDec = makePillBtn("-1", curTheme.btnSlate, 25);
+                    h.bAdd = makePillBtn("+1", curTheme.btnGreen, 25);
+                    h.bMax = makePillBtn("满级", curTheme.btnBlue, 25);
+                    h.bDel = makePillBtn("移除", curTheme.btnRed, 25);
+                    h.bDec.setTextSize(10f); h.bAdd.setTextSize(10f); h.bMax.setTextSize(10f); h.bDel.setTextSize(10f);
+                    row.addView(h.bDec);
+                    row.addView(h.bAdd);
+                    row.addView(h.bMax);
+                    row.addView(h.bDel);
+
+                    h.card = row;
+                    convertView = outer;
+                    convertView.setTag(h);
+                } else {
+                    h = (TsHolder) convertView.getTag();
+                }
+
+                final int tc = selectedTargetCid[0];
+                final TalentInfo ti = filteredTalents.get(pos);
+                final int curLv = ownedTalentsForTarget.containsKey(ti.id) ? ownedTalentsForTarget.get(ti.id) : 0;
+                boolean owned = (curLv > 0);
+                h.iv.setVisibility(View.GONE);
+                h.card.setBackground(makeRoundBox(owned ? curTheme.cardOnBg : curTheme.cardBg, owned ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(8)));
+                String tag = (ti.type == 2) ? "[称号] " : "[擅长] ";
+                h.tvTitle.setText(tag + ti.name + "   #" + ti.id);
+                h.tvTitle.setTextColor(curTheme.textPri);
+
+                StringBuilder lvInfo = new StringBuilder();
+                lvInfo.append("级数:").append(ti.levels.size()).append(" (").append(ti.minLv).append("~").append(ti.maxLv).append(")");
+                for (TalentLevelInfo li : ti.levels) {
+                    if ((owned && li.lv == curLv) || (!owned && li.lv == ti.minLv)) {
+                        if (li.param != null && !li.param.isEmpty()) lvInfo.append(" · 数值:").append(li.param);
+                        break;
+                    }
+                }
+                h.tvSub.setText(lvInfo.toString());
+                h.tvSub.setTextColor(curTheme.textSec);
+
+                h.tvLv.setText(owned ? ("Lv." + curLv) : "未习得");
+                h.tvLv.setTextColor(owned ? curTheme.emerald : curTheme.textSec);
+
+                h.bDec.setVisibility(owned ? View.VISIBLE : View.GONE);
+                h.bAdd.setVisibility(View.VISIBLE);
+                h.bAdd.setText(owned ? "升级" : "添加");
+                h.bMax.setVisibility(ti.maxLv > ti.minLv ? View.VISIBLE : View.GONE);
+                h.bDel.setVisibility(owned ? View.VISIBLE : View.GONE);
+
+                h.bDec.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        int next = stepTalentLevel(ti, curLv, false);
+                        Menu.NativeQuery(18, ti.id, next <= 0 ? 1 : 0, (long) tc, String.valueOf(next));
+                        mainH.postDelayed(new Runnable() { @Override public void run() { if (talentStateRefreshHook != null) talentStateRefreshHook.run(); } }, 180);
+                    }
+                });
+                h.bAdd.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        int next = stepTalentLevel(ti, curLv, true);
+                        Menu.NativeQuery(18, ti.id, 0, (long) tc, String.valueOf(next));
+                        mainH.postDelayed(new Runnable() { @Override public void run() { if (talentStateRefreshHook != null) talentStateRefreshHook.run(); } }, 180);
+                    }
+                });
+                h.bMax.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        Menu.NativeQuery(18, ti.id, 0, (long) tc, String.valueOf(ti.maxLv));
+                        mainH.postDelayed(new Runnable() { @Override public void run() { if (talentStateRefreshHook != null) talentStateRefreshHook.run(); } }, 180);
+                    }
+                });
+                h.bDel.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        Menu.NativeQuery(18, ti.id, 1, (long) tc, "0");
+                        mainH.postDelayed(new Runnable() { @Override public void run() { if (talentStateRefreshHook != null) talentStateRefreshHook.run(); } }, 180);
+                    }
+                });
+                return convertView;
+            }
+        };
+        lv.setAdapter(adapter);
+
+        final Runnable applyFilter = new Runnable() {
+            @Override public void run() {
+                String q = etSearch.getText().toString().trim().toLowerCase(Locale.US);
+                ownedTalentsForTarget.clear();
+                Map<Integer, Integer> tgtMap = allOwnedTalents.get(selectedTargetCid[0]);
+                if (tgtMap != null) ownedTalentsForTarget.putAll(tgtMap);
+
+                filteredTalents.clear();
+                List<TalentInfo> src = sTalentsCache;
+                if (src != null) {
+                    for (TalentInfo ti : src) {
+                        int f = curTypeFilter[0];
+                        if (f == 1 && ti.type != 1) continue;
+                        if (f == 2 && ti.type != 2) continue;
+                        if (f == 3 && !ownedTalentsForTarget.containsKey(ti.id)) continue;
+                        if (!q.isEmpty() && !ti.name.toLowerCase(Locale.US).contains(q) && !String.valueOf(ti.id).contains(q))
+                            continue;
+                        filteredTalents.add(ti);
+                    }
+                }
+                tvSummary.setText("目标对象已拥有天赋/擅长: " + ownedTalentsForTarget.size() + " 项 · 当前显示 " + filteredTalents.size() + " 项 (已自动绕过主角黑名单)");
+                adapter.notifyDataSetChanged();
+            }
+        };
+        rebuildRef[0] = applyFilter;
+
+        talentStateRefreshHook = new Runnable() {
+            @Override public void run() {
+                loadTalentsAndSkills(ctx, false);
+                try {
+                    String raw = readFileText(new File(ctx.getFilesDir(), "dyn_talent_state.json"));
+                    if (raw.startsWith("{")) {
+                        JSONObject o = new JSONObject(raw);
+                        int curCid = o.optInt("cid", 0);
+                        targetsList.clear();
+                        JSONArray ta = o.optJSONArray("targets");
+                        if (ta != null) {
+                            for (int i = 0; i < ta.length(); i++) {
+                                JSONObject to = ta.optJSONObject(i);
+                                if (to == null) continue;
+                                TargetCharInfo tc = new TargetCharInfo();
+                                tc.cid = to.optInt("cid");
+                                tc.name = to.optString("name", "#" + tc.cid);
+                                targetsList.add(tc);
+                            }
+                        }
+                        if (selectedTargetCid[0] == 0 && !targetsList.isEmpty()) {
+                            selectedTargetCid[0] = targetsList.get(0).cid;
+                        }
+                        tgtAdapter.clear();
+                        int selIdx = 0;
+                        for (int i = 0; i < targetsList.size(); i++) {
+                            TargetCharInfo tci = targetsList.get(i);
+                            tgtAdapter.add(tci.name + " #" + tci.cid);
+                            if (tci.cid == selectedTargetCid[0]) selIdx = i;
+                        }
+                        if (targetsList.isEmpty()) {
+                            tgtAdapter.add(curCid > 0 ? ("主角 #" + curCid) : "未进入存档");
+                            selectedTargetCid[0] = curCid;
+                        }
+                        tgtAdapter.notifyDataSetChanged();
+                        if (selIdx < tgtAdapter.getCount()) spTarget.setSelection(selIdx);
+
+                        allOwnedTalents.clear();
+                        JSONArray oa = o.optJSONArray("owned");
+                        if (oa != null) {
+                            for (int i = 0; i < oa.length(); i++) {
+                                JSONObject oo = oa.optJSONObject(i);
+                                if (oo == null) continue;
+                                int tc = oo.optInt("tc");
+                                int tid = oo.optInt("id");
+                                int lv = oo.optInt("lv");
+                                Map<Integer, Integer> m = allOwnedTalents.get(tc);
+                                if (m == null) { m = new HashMap<Integer, Integer>(); allOwnedTalents.put(tc, m); }
+                                m.put(tid, lv);
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+                applyFilter.run();
+            }
+        };
+
+        spTarget.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
+                if (pos >= 0 && pos < targetsList.size()) {
+                    int ncid = targetsList.get(pos).cid;
+                    if (selectedTargetCid[0] != ncid) {
+                        selectedTargetCid[0] = ncid;
+                        applyFilter.run();
+                    }
+                }
+            }
+            @Override public void onNothingSelected(AdapterView<?> p) {}
+        });
+
+        for (int i = 0; i < tfBtns.size(); i++) {
+            final int fi = i;
+            tfBtns.get(i).setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    curTypeFilter[0] = fi;
+                    for (int k = 0; k < tfBtns.size(); k++) {
+                        tfBtns.get(k).setBackground(makeRoundBox(k == fi ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                    }
+                    applyFilter.run();
+                }
+            });
+        }
+
+        btnRefT.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(9, 0, 0, 0L, "");
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        if (talentStateRefreshHook != null) talentStateRefreshHook.run();
+                    }
+                }, 180);
+            }
+        });
+
+        etSearch.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(Editable s) { applyFilter.run(); }
+        });
+
+        themeRefreshHooks.add(new Runnable() {
+            @Override public void run() {
+                styleEditBox(etSearch);
+                tvSummary.setTextColor(curTheme.textSec);
+                tvModeBadge.setTextColor(curTheme.accent);
+                btnRefT.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+                for (int k = 0; k < tfBtns.size(); k++) {
+                    tfBtns.get(k).setBackground(makeRoundBox(k == curTypeFilter[0] ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                }
+                adapter.notifyDataSetChanged();
+            }
+        });
+
+        applyFilter.run();
+        return wrap;
+    }
+
+    private FrameLayout buildHirePage() {
+        final FrameLayout wrap = new FrameLayout(ctx);
+        LinearLayout root = new LinearLayout(ctx);
+        root.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(root, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        loadHireCatalog(ctx, false);
+
+        final int[] curSubTab = new int[] { 0 }; // 0=Hire(剧情随从), 1=Worker(战士/工人), 2=ForceUnit(全Unit强雇), 3=Nearby(现场收编)
+        final int[] curForceCat = new int[] { 0 }; // 0=全部, 1=工人/角色(cls==3), 2=NPC(cls==2), 3=单位/首领(cls!=2&&cls!=3)
+        final int[] tameRangeM = new int[] { 25 };
+        final boolean[] tameTracking = new boolean[] { false };
+        final Runnable[] applyFilterRef = new Runnable[1];
+        final Set<Integer> ownedHires = new HashSet<Integer>();
+        final Set<Integer> ownedWorkers = new HashSet<Integer>();
+        final Set<Integer> activeTeamates = new HashSet<Integer>();
+        final Set<Integer> forcedIds = new HashSet<Integer>();
+        final List<NearbyEntityInfo> nearbyList = new ArrayList<NearbyEntityInfo>();
+
+        final List<HireDefInfo> filHires = new ArrayList<HireDefInfo>();
+        final List<WorkerDefInfo> filWorkers = new ArrayList<WorkerDefInfo>();
+        final List<UnitDefInfo> filUnits = new ArrayList<UnitDefInfo>();
+        final List<NearbyEntityInfo> filNearby = new ArrayList<NearbyEntityInfo>();
+
+        // Row 1: Sub-tab selector buttons
+        LinearLayout rTabs = new LinearLayout(ctx);
+        rTabs.setOrientation(LinearLayout.HORIZONTAL);
+        rTabs.setGravity(Gravity.CENTER_VERTICAL);
+        final String[] hNames = new String[] { "剧情随从", "营地战士/工人", "强制雇佣 (全NPC)", "现场收编" };
+        final List<Button> hTabBtns = new ArrayList<Button>();
+        hireSubTabBtns.clear();
+        for (int i = 0; i < hNames.length; i++) {
+            final int ti = i;
+            Button b = makePillBtn(hNames[i], i == 0 ? curTheme.btnBlue : curTheme.btnSlate, 28);
+            b.setTextSize(10f);
+            hTabBtns.add(b);
+            hireSubTabBtns.add(b);
+            rTabs.addView(b);
+        }
+        root.addView(rTabs);
+
+        // Row 2: Search + Refresh + Clear Force-Hire
+        LinearLayout rSearch = new LinearLayout(ctx);
+        rSearch.setOrientation(LinearLayout.HORIZONTAL);
+        rSearch.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sLp.setMargins(0, dp(3), 0, dp(3));
+
+        final EditText etSearch = makeDarkEdit("搜索随从 / NPC 名称或 ID...", false);
+        etSearch.setLayoutParams(new LinearLayout.LayoutParams(0, dp(29), 1f));
+        rSearch.addView(etSearch);
+
+        final Button btnRefH = makePillBtn("刷新列表", curTheme.btnGreen, 28);
+        final Button btnClearForce = makePillBtn("清空强雇", curTheme.btnRed, 28);
+        btnClearForce.setVisibility(View.GONE);
+        rSearch.addView(btnRefH);
+        rSearch.addView(btnClearForce);
+        root.addView(rSearch, sLp);
+
+        // Row 2b: Force-Hire sub-category filter bar ([全部] [工人/角色] [NPC] [单位/首领])
+        final LinearLayout rForceCat = new LinearLayout(ctx);
+        rForceCat.setOrientation(LinearLayout.HORIZONTAL);
+        rForceCat.setGravity(Gravity.CENTER_VERTICAL);
+        rForceCat.setVisibility(View.GONE);
+        LinearLayout.LayoutParams fcLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        fcLp.setMargins(0, 0, 0, dp(3));
+        final String[] fcNames = new String[] { "全部", "工人/角色", "NPC", "单位/首领" };
+        final List<Button> fcBtns = new ArrayList<Button>();
+        for (int i = 0; i < fcNames.length; i++) {
+            final int fi = i;
+            Button fb = makePillBtn(fcNames[i], i == 0 ? curTheme.btnBlue : curTheme.btnSlate, 25);
+            fb.setTextSize(10f);
+            fb.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    curForceCat[0] = fi;
+                    for (int k = 0; k < fcBtns.size(); k++) {
+                        fcBtns.get(k).setBackground(makeRoundBox(k == fi ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                    }
+                    if (applyFilterRef[0] != null) applyFilterRef[0].run();
+                }
+            });
+            fcBtns.add(fb);
+            rForceCat.addView(fb);
+        }
+        root.addView(rForceCat, fcLp);
+
+        // Row 2c: Nearby Tame scan range bar (SeekBar 5m..200m + quick presets including 全图)
+        final LinearLayout rTameDist = new LinearLayout(ctx);
+        rTameDist.setOrientation(LinearLayout.VERTICAL);
+        rTameDist.setVisibility(View.GONE);
+        LinearLayout.LayoutParams tdLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tdLp.setMargins(0, 0, 0, dp(3));
+
+        LinearLayout rTameTop = new LinearLayout(ctx);
+        rTameTop.setOrientation(LinearLayout.HORIZONTAL);
+        rTameTop.setGravity(Gravity.CENTER_VERTICAL);
+
+        final TextView tvTameRange = new TextView(ctx);
+        tvTameRange.setText("扫描范围: 25m");
+        tvTameRange.setTextColor(curTheme.accent);
+        tvTameRange.setTextSize(10.5f);
+        tvTameRange.setTypeface(null, Typeface.BOLD);
+        rTameTop.addView(tvTameRange, new LinearLayout.LayoutParams(dp(92), ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final SeekBar sbTame = new SeekBar(ctx);
+        sbTame.setMax(195); // 5m .. 200m
+        sbTame.setProgress(20);
+        sbTame.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        rTameTop.addView(sbTame);
+        rTameDist.addView(rTameTop);
+
+        LinearLayout rTamePresets = new LinearLayout(ctx);
+        rTamePresets.setOrientation(LinearLayout.HORIZONTAL);
+        rTamePresets.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams tpLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tpLp.setMargins(0, dp(2), 0, 0);
+        final int[] tamePresetVals = new int[] { 15, 25, 50, 100, 999 };
+        final String[] tamePresetLabels = new String[] { "15m", "25m", "50m", "100m", "全图" };
+        final List<Button> tamePresetBtns = new ArrayList<Button>();
+        final Runnable syncTameDistUi = new Runnable() {
+            @Override public void run() {
+                int r = tameRangeM[0];
+                tvTameRange.setText(r >= 999 ? "扫描范围: 全图" : ("扫描范围: " + r + "m"));
+                sbTame.setProgress(Math.min(195, Math.max(0, r - 5)));
+                for (int k = 0; k < tamePresetBtns.size(); k++) {
+                    boolean active = (r >= 999 ? tamePresetVals[k] >= 999 : tamePresetVals[k] == r);
+                    tamePresetBtns.get(k).setBackground(makeRoundBox(active ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                }
+            }
+        };
+        for (int i = 0; i < tamePresetVals.length; i++) {
+            final int pv = tamePresetVals[i];
+            Button pb = makePillBtn(tamePresetLabels[i], pv == 25 ? curTheme.btnBlue : curTheme.btnSlate, 24);
+            pb.setTextSize(9.5f);
+            pb.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    tameRangeM[0] = pv;
+                    syncTameDistUi.run();
+                    Menu.NativeQuery(19, pv, 8, 0L, "0");
+                    mainH.postDelayed(new Runnable() {
+                        @Override public void run() {
+                            if (hireStateRefreshHook != null) hireStateRefreshHook.run();
+                        }
+                    }, 160);
+                }
+            });
+            tamePresetBtns.add(pb);
+            rTamePresets.addView(pb);
+        }
+        rTameDist.addView(rTamePresets, tpLp);
+
+        sbTame.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+                if (!fromUser) return;
+                int r = Math.max(5, Math.min(200, progress + 5));
+                tameRangeM[0] = r;
+                tvTameRange.setText("扫描范围: " + r + "m");
+                for (int k = 0; k < tamePresetBtns.size(); k++) {
+                    tamePresetBtns.get(k).setBackground(makeRoundBox(tamePresetVals[k] == r ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) { tameTracking[0] = true; }
+            @Override public void onStopTrackingTouch(SeekBar s) {
+                tameTracking[0] = false;
+                Menu.NativeQuery(19, tameRangeM[0], 8, 0L, "0");
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        if (hireStateRefreshHook != null) hireStateRefreshHook.run();
+                    }
+                }, 160);
+            }
+        });
+        root.addView(rTameDist, tdLp);
+
+        final TextView tvSummary = new TextView(ctx);
+        tvSummary.setTextColor(curTheme.textSec);
+        tvSummary.setTextSize(10.5f);
+        tvSummary.setPadding(dp(2), 0, dp(2), dp(2));
+        root.addView(tvSummary);
+
+        final ListView lv = new ListView(ctx);
+        lv.setDivider(null);
+        lv.setDividerHeight(0);
+        lv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(lv);
+
+        final class HireHolder {
+            LinearLayout card;
+            TextView tvTitle, tvSub, tvState;
+            Button b1, b2, b3;
+        }
+
+        final BaseAdapter adapter = new BaseAdapter() {
+            @Override public int getCount() {
+                if (curSubTab[0] == 0) return filHires.size();
+                if (curSubTab[0] == 1) return filWorkers.size();
+                if (curSubTab[0] == 2) return filUnits.size();
+                return filNearby.size();
+            }
+            @Override public Object getItem(int pos) { return pos; }
+            @Override public long getItemId(int pos) { return pos; }
+
+            @Override public View getView(int pos, View convertView, ViewGroup parent) {
+                HireHolder h;
+                if (convertView == null) {
+                    h = new HireHolder();
+                    LinearLayout row = new LinearLayout(ctx);
+                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    row.setGravity(Gravity.CENTER_VERTICAL);
+                    row.setPadding(dp(10), dp(6), dp(10), dp(6));
+
+                    LinearLayout outer = new LinearLayout(ctx);
+                    outer.setOrientation(LinearLayout.VERTICAL);
+                    outer.setPadding(0, dp(2), 0, dp(2));
+                    outer.addView(row, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                    LinearLayout mid = new LinearLayout(ctx);
+                    mid.setOrientation(LinearLayout.VERTICAL);
+                    mid.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                    h.tvTitle = new TextView(ctx);
+                    h.tvTitle.setTextSize(12f);
+                    h.tvTitle.setTypeface(null, Typeface.BOLD);
+                    h.tvTitle.setSingleLine(true);
+                    h.tvTitle.setEllipsize(TextUtils.TruncateAt.END);
+                    mid.addView(h.tvTitle);
+
+                    h.tvSub = new TextView(ctx);
+                    h.tvSub.setTextSize(10f);
+                    h.tvSub.setSingleLine(true);
+                    h.tvSub.setEllipsize(TextUtils.TruncateAt.END);
+                    mid.addView(h.tvSub);
+                    row.addView(mid);
+
+                    h.tvState = new TextView(ctx);
+                    h.tvState.setTextSize(10.5f);
+                    h.tvState.setTypeface(null, Typeface.BOLD);
+                    h.tvState.setPadding(dp(4), 0, dp(6), 0);
+                    row.addView(h.tvState);
+
+                    h.b1 = makePillBtn("雇佣", curTheme.btnGreen, 25);
+                    h.b2 = makePillBtn("出战", curTheme.btnBlue, 25);
+                    h.b3 = makePillBtn("解除", curTheme.btnRed, 25);
+                    h.b1.setTextSize(10f); h.b2.setTextSize(10f); h.b3.setTextSize(10f);
+                    row.addView(h.b1);
+                    row.addView(h.b2);
+                    row.addView(h.b3);
+
+                    h.card = row;
+                    convertView = outer;
+                    convertView.setTag(h);
+                } else {
+                    h = (HireHolder) convertView.getTag();
+                }
+
+                if (curSubTab[0] == 0) {
+                    final HireDefInfo hi = filHires.get(pos);
+                    boolean on = ownedHires.contains(hi.id);
+                    h.card.setBackground(makeRoundBox(on ? curTheme.cardOnBg : curTheme.cardBg, on ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(8)));
+                    h.tvTitle.setText(hi.name + "   #" + hi.id);
+                    h.tvTitle.setTextColor(curTheme.textPri);
+                    h.tvSub.setText("剧情随从模板: " + hi.tpl);
+                    h.tvSub.setTextColor(curTheme.textSec);
+                    h.tvState.setText(on ? "● 随行中" : "未雇佣");
+                    h.tvState.setTextColor(on ? curTheme.emerald : curTheme.textSec);
+                    h.b1.setVisibility(View.VISIBLE);
+                    h.b1.setText("雇佣随行");
+                    h.b2.setVisibility(View.GONE);
+                    h.b3.setVisibility(on ? View.VISIBLE : View.GONE);
+                    h.b3.setText("解除");
+
+                    h.b1.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            Menu.NativeQuery(19, hi.id, 0, 0L, "0");
+                            Toast.makeText(ctx, "已雇佣剧情随从 " + hi.name, Toast.LENGTH_SHORT).show();
+                            mainH.postDelayed(new Runnable() { @Override public void run() { if (hireStateRefreshHook != null) hireStateRefreshHook.run(); } }, 200);
+                        }
+                    });
+                    h.b3.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            Menu.NativeQuery(19, hi.id, 1, 0L, "0");
+                            mainH.postDelayed(new Runnable() { @Override public void run() { if (hireStateRefreshHook != null) hireStateRefreshHook.run(); } }, 200);
+                        }
+                    });
+                } else if (curSubTab[0] == 1) {
+                    final WorkerDefInfo wi = filWorkers.get(pos);
+                    boolean isW = ownedWorkers.contains(wi.id);
+                    boolean isT = activeTeamates.contains(wi.id);
+                    h.card.setBackground(makeRoundBox((isW || isT) ? curTheme.cardOnBg : curTheme.cardBg, (isW || isT) ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(8)));
+                    String role = (wi.wtype == 4 ? "战士" : (wi.wtype == 1 ? "商人" : (wi.wtype == 2 ? "伐木" : (wi.wtype == 3 ? "铁矿" : (wi.wtype == 6 ? "硝石" : "营地")))));
+                    h.tvTitle.setText("[" + role + "] " + wi.name + "   #" + wi.id);
+                    h.tvTitle.setTextColor(curTheme.textPri);
+                    h.tvSub.setText("HP:" + wi.hp + " · 日薪:" + wi.price + " · 生产速度:" + wi.spd);
+                    h.tvSub.setTextColor(curTheme.textSec);
+                    h.tvState.setText(isT ? "● 出战随行" : (isW ? "● 营地已雇" : "未雇佣"));
+                    h.tvState.setTextColor(isT ? curTheme.emerald : (isW ? curTheme.accent : curTheme.textSec));
+
+                    h.b1.setVisibility(View.VISIBLE);
+                    h.b1.setText("进营地");
+                    h.b2.setVisibility(View.VISIBLE);
+                    h.b2.setText("出战随行");
+                    h.b3.setVisibility((isW || isT) ? View.VISIBLE : View.GONE);
+                    h.b3.setText(isT ? "召回/解雇" : "解雇");
+
+                    h.b1.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            Menu.NativeQuery(19, wi.id, 2, 0L, "0");
+                            Toast.makeText(ctx, "已添加至营地并付薪: " + wi.name, Toast.LENGTH_SHORT).show();
+                            mainH.postDelayed(new Runnable() { @Override public void run() { if (hireStateRefreshHook != null) hireStateRefreshHook.run(); } }, 200);
+                        }
+                    });
+                    h.b2.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            Menu.NativeQuery(19, wi.id, 2, 0L, "1");
+                            Toast.makeText(ctx, "已出战跟随 (自动配武器): " + wi.name, Toast.LENGTH_SHORT).show();
+                            mainH.postDelayed(new Runnable() { @Override public void run() { if (hireStateRefreshHook != null) hireStateRefreshHook.run(); } }, 200);
+                        }
+                    });
+                    h.b3.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            Menu.NativeQuery(19, wi.id, 3, 0L, "0");
+                            mainH.postDelayed(new Runnable() { @Override public void run() { if (hireStateRefreshHook != null) hireStateRefreshHook.run(); } }, 200);
+                        }
+                    });
+                } else if (curSubTab[0] == 2) {
+                    final UnitDefInfo ui = filUnits.get(pos);
+                    boolean on = forcedIds.contains(ui.id);
+                    h.card.setBackground(makeRoundBox(on ? curTheme.cardOnBg : curTheme.cardBg, on ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(8)));
+                    String clsNm = (ui.cls == 2 ? "NPC" : (ui.cls == 3 ? "工人/角色" : "单位/首领"));
+                    h.tvTitle.setText("[" + clsNm + "] " + ui.name + "   #" + ui.id);
+                    h.tvTitle.setTextColor(curTheme.textPri);
+                    h.tvSub.setText("突破原版限制：强制赋予随从AI与对应外观召唤跟随");
+                    h.tvSub.setTextColor(curTheme.textSec);
+                    h.tvState.setText(on ? "● 强雇随行中" : "可强雇");
+                    h.tvState.setTextColor(on ? curTheme.emerald : curTheme.textSec);
+
+                    h.b1.setVisibility(View.VISIBLE);
+                    h.b1.setText("强制雇佣");
+                    h.b2.setVisibility(View.GONE);
+                    h.b3.setVisibility(on ? View.VISIBLE : View.GONE);
+                    h.b3.setText("撤回");
+
+                    h.b1.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            Menu.NativeQuery(19, ui.id, 4, 0L, "0");
+                            Toast.makeText(ctx, "正在强制召唤: " + ui.name, Toast.LENGTH_SHORT).show();
+                            mainH.postDelayed(new Runnable() { @Override public void run() { if (hireStateRefreshHook != null) hireStateRefreshHook.run(); } }, 250);
+                        }
+                    });
+                    h.b3.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            Menu.NativeQuery(19, ui.id, 5, 0L, "0");
+                            mainH.postDelayed(new Runnable() { @Override public void run() { if (hireStateRefreshHook != null) hireStateRefreshHook.run(); } }, 250);
+                        }
+                    });
+                } else {
+                    final NearbyEntityInfo ne = filNearby.get(pos);
+                    final boolean tamed = ne.tamed;
+                    h.card.setBackground(makeRoundBox(tamed ? curTheme.cardOnBg : curTheme.cardBg, tamed ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(8)));
+                    h.tvTitle.setText(ne.name + "   #" + ne.id);
+                    h.tvTitle.setTextColor(curTheme.textPri);
+                    h.tvSub.setText(String.format(Locale.US, "距离:%.1fm · 阵营:%d · HP:%d/%d · UID:%s", ne.dist, ne.camp, ne.hp, ne.maxHp, ne.uid));
+                    h.tvSub.setTextColor(curTheme.textSec);
+                    h.tvState.setText(tamed ? "● 已收编" : "在场单位");
+                    h.tvState.setTextColor(tamed ? curTheme.emerald : curTheme.accent);
+                    if (tamed) {
+                        h.b1.setVisibility(View.GONE);
+                        h.b2.setVisibility(View.GONE);
+                        h.b3.setVisibility(View.VISIBLE);
+                        h.b3.setText("撤回");
+                        h.b3.setOnClickListener(new View.OnClickListener() {
+                            @Override public void onClick(View v) {
+                                long uidLong = 0L;
+                                try { uidLong = new java.math.BigInteger(ne.uid).longValue(); } catch (Throwable ignored) {}
+                                Menu.NativeQuery(19, ne.id, 9, uidLong, "0");
+                                Toast.makeText(ctx, "已撤回收编 " + ne.name, Toast.LENGTH_SHORT).show();
+                                mainH.postDelayed(new Runnable() { @Override public void run() { if (hireStateRefreshHook != null) hireStateRefreshHook.run(); } }, 200);
+                            }
+                        });
+                    } else {
+                        h.b1.setVisibility(View.VISIBLE);
+                        h.b1.setText("收编为友军");
+                        h.b2.setVisibility(View.GONE);
+                        h.b3.setVisibility(View.GONE);
+                        h.b1.setOnClickListener(new View.OnClickListener() {
+                            @Override public void onClick(View v) {
+                                long uidLong = 0L;
+                                try { uidLong = new java.math.BigInteger(ne.uid).longValue(); } catch (Throwable ignored) {}
+                                Menu.NativeQuery(19, ne.id, 6, uidLong, "0");
+                                Toast.makeText(ctx, "已将 " + ne.name + " 收编为友军!", Toast.LENGTH_SHORT).show();
+                                mainH.postDelayed(new Runnable() { @Override public void run() { if (hireStateRefreshHook != null) hireStateRefreshHook.run(); } }, 200);
+                            }
+                        });
+                    }
+                }
+                return convertView;
+            }
+        };
+        lv.setAdapter(adapter);
+
+        final Runnable applyFilter = new Runnable() {
+            @Override public void run() {
+                String q = etSearch.getText().toString().trim().toLowerCase(Locale.US);
+                if (curSubTab[0] == 0) {
+                    filHires.clear();
+                    if (sHiresCache != null) {
+                        for (HireDefInfo hi : sHiresCache) {
+                            if (q.isEmpty() || hi.name.toLowerCase(Locale.US).contains(q) || String.valueOf(hi.id).contains(q))
+                                filHires.add(hi);
+                        }
+                    }
+                    tvSummary.setText("Hire.csv 剧情随从 (尼奥/K/姜娜/老吴/消防无人机等): " + filHires.size() + " 项 · 当前已雇 " + ownedHires.size() + " 位");
+                } else if (curSubTab[0] == 1) {
+                    filWorkers.clear();
+                    if (sWorkersCache != null) {
+                        for (WorkerDefInfo wi : sWorkersCache) {
+                            if (q.isEmpty() || wi.name.toLowerCase(Locale.US).contains(q) || String.valueOf(wi.id).contains(q))
+                                filWorkers.add(wi);
+                        }
+                    }
+                    tvSummary.setText("Worker.csv 营地战士/工人: " + filWorkers.size() + " 项 · 已雇 " + ownedWorkers.size() + " · 出战 " + activeTeamates.size() + " (无视人数上限)");
+                } else if (curSubTab[0] == 2) {
+                    filUnits.clear();
+                    int fc = curForceCat[0];
+                    if (sUnitsCache != null) {
+                        for (UnitDefInfo ui : sUnitsCache) {
+                            if (fc == 1 && ui.cls != 3) continue;
+                            if (fc == 2 && ui.cls != 2) continue;
+                            if (fc == 3 && (ui.cls == 2 || ui.cls == 3)) continue;
+                            if (q.isEmpty() || ui.name.toLowerCase(Locale.US).contains(q) || String.valueOf(ui.id).contains(q))
+                                filUnits.add(ui);
+                        }
+                    }
+                    tvSummary.setText("Unit.csv 强制雇佣 [" + fcNames[fc] + "]: " + filUnits.size() + " 项 · 当前强雇随行 " + forcedIds.size() + " 位");
+                } else {
+                    filNearby.clear();
+                    int tamedCnt = 0;
+                    for (NearbyEntityInfo ne : nearbyList) {
+                        if (!ne.tamed) continue;
+                        tamedCnt++;
+                        if (q.isEmpty() || ne.name.toLowerCase(Locale.US).contains(q) || String.valueOf(ne.id).contains(q))
+                            filNearby.add(ne);
+                    }
+                    for (NearbyEntityInfo ne : nearbyList) {
+                        if (ne.tamed) continue;
+                        if (q.isEmpty() || ne.name.toLowerCase(Locale.US).contains(q) || String.valueOf(ne.id).contains(q))
+                            filNearby.add(ne);
+                    }
+                    String rngTxt = tameRangeM[0] >= 999 ? "全图" : (tameRangeM[0] + "m");
+                    tvSummary.setText("周围 " + rngTxt + " 存活单位: " + filNearby.size() + " 位 · 已收编 " + tamedCnt + " 位 (列表保留可撤回)");
+                }
+                adapter.notifyDataSetChanged();
+            }
+        };
+        applyFilterRef[0] = applyFilter;
+
+        hireStateRefreshHook = new Runnable() {
+            @Override public void run() {
+                loadHireCatalog(ctx, false);
+                try {
+                    String raw = readFileText(new File(ctx.getFilesDir(), "dyn_hire_state.json"));
+                    if (raw.startsWith("{")) {
+                        JSONObject o = new JSONObject(raw);
+                        int srvRange = o.optInt("tameRange", tameRangeM[0]);
+                        if (!tameTracking[0] && srvRange >= 5 && srvRange <= 999) {
+                            tameRangeM[0] = srvRange;
+                            syncTameDistUi.run();
+                        }
+
+                        ownedHires.clear();
+                        JSONArray ha = o.optJSONArray("hires");
+                        if (ha != null) for (int i = 0; i < ha.length(); i++) ownedHires.add(ha.optInt(i));
+
+                        ownedWorkers.clear();
+                        JSONArray wa = o.optJSONArray("workers");
+                        if (wa != null) for (int i = 0; i < wa.length(); i++) ownedWorkers.add(wa.optInt(i));
+
+                        activeTeamates.clear();
+                        JSONArray ta = o.optJSONArray("teamates");
+                        if (ta != null) for (int i = 0; i < ta.length(); i++) activeTeamates.add(ta.optInt(i));
+                        JSONArray ca = o.optJSONArray("captures");
+                        if (ca != null) for (int i = 0; i < ca.length(); i++) activeTeamates.add(ca.optInt(i));
+
+                        forcedIds.clear();
+                        JSONArray fa = o.optJSONArray("forced");
+                        if (fa != null) for (int i = 0; i < fa.length(); i++) forcedIds.add(fa.optInt(i));
+
+                        nearbyList.clear();
+                        JSONArray na = o.optJSONArray("nearby");
+                        if (na != null) {
+                            for (int i = 0; i < na.length(); i++) {
+                                JSONObject no = na.optJSONObject(i);
+                                if (no == null) continue;
+                                NearbyEntityInfo ne = new NearbyEntityInfo();
+                                ne.uid = no.optString("uid", "0");
+                                ne.id = no.optInt("id");
+                                ne.name = no.optString("name", "#" + ne.id);
+                                ne.camp = no.optInt("camp");
+                                ne.hp = no.optInt("hp");
+                                ne.maxHp = no.optInt("maxHp");
+                                ne.dist = (float) no.optDouble("dist", 0.0);
+                                ne.tamed = no.optInt("tamed", 0) != 0;
+                                nearbyList.add(ne);
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+                applyFilter.run();
+            }
+        };
+
+        for (int i = 0; i < hTabBtns.size(); i++) {
+            final int ti = i;
+            hTabBtns.get(i).setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    curSubTab[0] = ti;
+                    btnClearForce.setVisibility(ti == 2 ? View.VISIBLE : View.GONE);
+                    rForceCat.setVisibility(ti == 2 ? View.VISIBLE : View.GONE);
+                    rTameDist.setVisibility(ti == 3 ? View.VISIBLE : View.GONE);
+                    for (int k = 0; k < hTabBtns.size(); k++) {
+                        hTabBtns.get(k).setBackground(makeRoundBox(k == ti ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                    }
+                    if (ti == 3) {
+                        Menu.NativeQuery(9, 0, 0, 0L, "");
+                        mainH.postDelayed(new Runnable() {
+                            @Override public void run() {
+                                if (hireStateRefreshHook != null) hireStateRefreshHook.run();
+                            }
+                        }, 180);
+                    }
+                    applyFilter.run();
+                }
+            });
+        }
+
+        btnRefH.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(9, 0, 0, 0L, "");
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        if (hireStateRefreshHook != null) hireStateRefreshHook.run();
+                    }
+                }, 180);
+            }
+        });
+
+        btnClearForce.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(19, 0, 7, 0L, "0");
+                Toast.makeText(ctx, "已清空所有强制雇佣角色", Toast.LENGTH_SHORT).show();
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        if (hireStateRefreshHook != null) hireStateRefreshHook.run();
+                    }
+                }, 200);
+            }
+        });
+
+        etSearch.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(Editable s) { applyFilter.run(); }
+        });
+
+        themeRefreshHooks.add(new Runnable() {
+            @Override public void run() {
+                styleEditBox(etSearch);
+                tvSummary.setTextColor(curTheme.textSec);
+                tvTameRange.setTextColor(curTheme.accent);
+                btnRefH.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+                btnClearForce.setBackground(makeRoundBox(curTheme.btnRed, 0x33FFFFFF, 1, dp(7)));
+                for (int k = 0; k < hTabBtns.size(); k++) {
+                    hTabBtns.get(k).setBackground(makeRoundBox(k == curSubTab[0] ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                }
+                for (int k = 0; k < fcBtns.size(); k++) {
+                    fcBtns.get(k).setBackground(makeRoundBox(k == curForceCat[0] ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                }
+                syncTameDistUi.run();
+                adapter.notifyDataSetChanged();
+            }
+        });
+
+        applyFilter.run();
+        return wrap;
+    }
+
+    // =========================================================================
+    //  TAB 7: 其他功能 (战斗辅助: 自瞄 / ESP绘制 / 去震动 + 原有开关 + 机关枪卡片)
     // =========================================================================
     private LinearLayout makeSwitchRow(String title, String sub, boolean initialVal, final Switch[] outSw, final CompoundButton.OnCheckedChangeListener listener) {
         LinearLayout row = new LinearLayout(ctx);
@@ -3605,265 +5160,439 @@ public final class ModConsole {
         return row;
     }
 
-    private FrameLayout buildOtherFeaturesPage() {
+    // =========================================================================
+    //  动态地图 & 任务配表加载 + 全局搜索注册器
+    // =========================================================================
+    private EditText etMapSearchBox, etTaskSearchBox;
+
+    private static List<MapEntry> loadMapsCatalog(Context c, boolean forceReload) {
+        if (sMapsCache != null && !forceReload) return sMapsCache;
+        List<MapEntry> out = new ArrayList<MapEntry>(380);
+        try {
+            File f = new File(c.getFilesDir(), "dyn_maps.json");
+            String raw = readFileText(f);
+            if (raw != null && raw.startsWith("[")) {
+                JSONArray arr = new JSONArray(raw);
+                Map<Integer, MapEntry> byId = new HashMap<Integer, MapEntry>();
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject o = arr.optJSONObject(i);
+                    if (o == null) continue;
+                    MapEntry m = new MapEntry();
+                    m.id = o.optInt("id");
+                    m.name = o.optString("name", "").trim();
+                    if (m.name.isEmpty()) m.name = "场景 #" + m.id;
+                    m.desc = o.optString("desc", "").trim();
+                    m.us = o.optString("us", "").trim();
+                    m.belong = o.optInt("belong", 0);
+                    m.root = o.optInt("root", m.id);
+                    m.spawn = o.optInt("spawn", 0);
+                    m.cat = o.optInt("cat", 1);
+                    m.ui = o.optInt("ui", 0);
+                    m.valid = o.optInt("valid", 1) != 0;
+                    m.depth = 0;
+                    m.childCount = 0;
+                    m.expanded = false;
+                    out.add(m);
+                    byId.put(m.id, m);
+                }
+                for (MapEntry m : out) {
+                    int d = 0;
+                    int cur = m.belong;
+                    int guard = 0;
+                    while (cur > 0 && cur != m.id && byId.containsKey(cur) && guard++ < 8) {
+                        d++;
+                        MapEntry p = byId.get(cur);
+                        if (p == null) break;
+                        if (d == 1) p.childCount++;
+                        int nxt = p.belong;
+                        if (nxt == cur || nxt == 0) break;
+                        cur = nxt;
+                    }
+                    m.depth = d;
+                }
+                sMapsCache = out;
+                return out;
+            }
+        } catch (Throwable ignored) {}
+        return sMapsCache != null ? sMapsCache : out;
+    }
+
+    private static List<TaskEntry> loadTasksCatalog(Context c, boolean forceReload) {
+        if (sTasksCache != null && !forceReload) return sTasksCache;
+        List<TaskEntry> out = new ArrayList<TaskEntry>(300);
+        try {
+            File f = new File(c.getFilesDir(), "dyn_tasks.json");
+            String raw = readFileText(f);
+            JSONArray arr = null;
+            if (raw != null) {
+                if (raw.startsWith("{")) {
+                    JSONObject obj = new JSONObject(raw);
+                    arr = obj.optJSONArray("events");
+                } else if (raw.startsWith("[")) {
+                    arr = new JSONArray(raw);
+                }
+            }
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject o = arr.optJSONObject(i);
+                    if (o == null) continue;
+                    TaskEntry t = new TaskEntry();
+                    t.id = o.optInt("id");
+                    t.cf = o.optInt("cf", t.id);
+                    t.name = o.optString("name", "").trim();
+                    if (t.name.isEmpty()) t.name = "任务 #" + t.id;
+                    t.desc = o.optString("desc", "").trim();
+                    t.reward = o.optString("reward", "").trim();
+                    t.scene = o.optInt("scene", 0);
+                    t.sceneName = o.optString("sceneName", "").trim();
+                    t.root = o.optInt("root", t.scene);
+                    t.rootName = o.optString("rootName", "").trim();
+                    t.scenes = o.optString("scenes", "").trim();
+                    t.cat = o.optInt("cat", 1);
+                    t.parent = o.optInt("parent", 0);
+                    t.depth = o.optInt("depth", 0);
+                    t.unlockTxt = o.optString("unlockTxt", "").trim();
+                    t.finishTxt = o.optString("finishTxt", "").trim();
+                    t.showTxt = o.optString("showTxt", "").trim();
+                    out.add(t);
+                }
+                Collections.sort(out, new Comparator<TaskEntry>() {
+                    @Override public int compare(TaskEntry a, TaskEntry b) {
+                        if (a.cat != b.cat) return a.cat - b.cat;
+                        if (a.root != b.root) return a.root - b.root;
+                        if (a.depth != b.depth) return a.depth - b.depth;
+                        return a.id - b.id;
+                    }
+                });
+                sTasksCache = out;
+                return out;
+            }
+        } catch (Throwable ignored) {}
+        return sTasksCache != null ? sTasksCache : out;
+    }
+
+    private static List<SpawnUnitInfo> loadUnitsCatalog(Context c, boolean forceReload) {
+        if (sSpawnUnitsCache != null && !forceReload) return sSpawnUnitsCache;
+        List<SpawnUnitInfo> out = new ArrayList<SpawnUnitInfo>(720);
+        try {
+            File f = new File(c.getFilesDir(), "dyn_units.json");
+            String raw = readFileText(f);
+            if (raw != null && raw.startsWith("[")) {
+                JSONArray arr = new JSONArray(raw);
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject o = arr.optJSONObject(i);
+                    if (o == null) continue;
+                    SpawnUnitInfo u = new SpawnUnitInfo();
+                    u.id = o.optInt("id");
+                    u.cls = o.optInt("cls", 1);
+                    u.wtype = o.optInt("wtype", 0);
+                    u.fac = o.optInt("fac", 1);
+                    u.camp = o.optInt("camp", -9999);
+                    u.exp = o.optInt("exp", 0);
+                    u.hp = o.optInt("hp", 0);
+                    u.hasPrefab = o.optInt("hasPrefab", 0);
+                    u.name = o.optString("name", "").trim();
+                    if (u.name.isEmpty()) u.name = "Entity #" + u.id;
+                    u.sub = o.optString("sub", "").trim();
+                    if (u.sub.isEmpty()) u.sub = "常规单位";
+                    u.desc = o.optString("desc", "").trim();
+                    u.icon = o.optString("icon", "").trim();
+                    out.add(u);
+                }
+                Collections.sort(out, new Comparator<SpawnUnitInfo>() {
+                    @Override public int compare(SpawnUnitInfo a, SpawnUnitInfo b) {
+                        if (a.hasPrefab != b.hasPrefab) return b.hasPrefab - a.hasPrefab;
+                        return a.id - b.id;
+                    }
+                });
+                sSpawnUnitsCache = out;
+                return out;
+            }
+        } catch (Throwable ignored) {}
+        return sSpawnUnitsCache != null ? sSpawnUnitsCache : out;
+    }
+
+    private void registerFeature(String category, String title, String desc, String keywords, int tabIdx, View targetView, ScrollView scrollView, Runnable subAction) {
+        FeatureSearchEntry e = new FeatureSearchEntry();
+        e.category = category != null ? category : "";
+        e.title = title != null ? title : "";
+        e.desc = desc != null ? desc : "";
+        e.keywords = keywords != null ? keywords : "";
+        e.tabIdx = tabIdx;
+        e.targetView = targetView;
+        e.scrollView = scrollView;
+        e.subAction = subAction;
+        searchRegistry.add(e);
+    }
+
+    // =========================================================================
+    //  TAB 6: 战斗辅助 (自瞄 / ESP透视绘制 / 机关枪模式 / 震动 / 子弹 / 耐久)
+    // =========================================================================
+    private FrameLayout buildCombatPage() {
         FrameLayout wrap = new FrameLayout(ctx);
-        ScrollView sv = new ScrollView(ctx);
-        sv.setVerticalScrollBarEnabled(true);
+        svCombat = new ScrollView(ctx);
+        svCombat.setVerticalScrollBarEnabled(true);
         LinearLayout col = new LinearLayout(ctx);
         col.setOrientation(LinearLayout.VERTICAL);
-        sv.addView(col);
-        wrap.addView(sv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        svCombat.addView(col);
+        wrap.addView(svCombat, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        tvOtherStatus = new TextView(ctx);
-        tvOtherStatus.setText("状态: 所有功能开关均实时生效，适配单人剧情与副本联机挑战");
-        tvOtherStatus.setTextColor(curTheme.accent);
-        tvOtherStatus.setTextSize(11);
-        tvOtherStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
-        tvOtherStatus.setPadding(dp(10), dp(5), dp(10), dp(5));
-        tvOtherStatus.setSingleLine(true);
-        tvOtherStatus.setEllipsize(TextUtils.TruncateAt.END);
+        tvCombatStatus = new TextView(ctx);
+        tvCombatStatus.setText("战斗辅助: 自瞄、ESP透视、机关枪连射、后坐力与弹药耐久集中控制");
+        tvCombatStatus.setTextColor(curTheme.accent);
+        tvCombatStatus.setTextSize(11);
+        tvCombatStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+        tvCombatStatus.setPadding(dp(10), dp(5), dp(10), dp(5));
+        tvCombatStatus.setSingleLine(true);
+        tvCombatStatus.setEllipsize(TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         stLp.setMargins(0, 0, 0, dp(6));
-        col.addView(tvOtherStatus, stLp);
+        col.addView(tvCombatStatus, stLp);
 
-        otherFeatureRows.clear();
-        otherFeatureTitles.clear();
-        otherFeatureSubs.clear();
+        // 1. Aimbot Card
+        cardAimbot = new LinearLayout(ctx);
+        cardAimbot.setOrientation(LinearLayout.VERTICAL);
+        cardAimbot.setPadding(dp(12), dp(10), dp(12), dp(10));
+        cardAimbot.setBackground(makeRoundBox(flagAimbot ? curTheme.cardOnBg : curTheme.cardBg, flagAimbot ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+        LinearLayout.LayoutParams aimLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        aimLp.setMargins(0, 0, 0, dp(6));
 
-        // 1. Anti-cheat switch
-        final Switch[] swHolderAC = new Switch[1];
-        LinearLayout rAC = makeSwitchRow("全链路反作弊保护", "C#协议+底层反作弊拦截，防止封号、校验与异常上报 (推荐常开)", flagAC, swHolderAC, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout aimTop = new LinearLayout(ctx);
+        aimTop.setOrientation(LinearLayout.HORIZONTAL);
+        aimTop.setGravity(Gravity.CENTER_VERTICAL);
+
+        final TextView tvAimT = new TextView(ctx);
+        tvAimT.setText("智能自瞄 (锁定最近敌对 · 蓄力散布自动0.5°)");
+        tvAimT.setTextSize(12.5f);
+        tvAimT.setTextColor(curTheme.textPri);
+        tvAimT.setTypeface(null, Typeface.BOLD);
+        tvAimT.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        aimTop.addView(tvAimT);
+
+        tvAimState = new TextView(ctx);
+        tvAimState.setTextSize(10.5f);
+        tvAimState.setTypeface(null, Typeface.BOLD);
+        tvAimState.setPadding(0, 0, dp(6), 0);
+        tvAimState.setText(flagAimbot ? "● 自瞄锁定中" : "○ 未开启");
+        tvAimState.setTextColor(flagAimbot ? curTheme.emerald : curTheme.textSec);
+        aimTop.addView(tvAimState);
+
+        swAimbot = new Switch(ctx);
+        swAimbot.setChecked(flagAimbot);
+        swAimbot.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagAC = isOn;
-                XposedEntry.antiCheatEnabled = flagAC;
-                Preferences.changeFeatureBool("全代码拦截作弊检验/上报/封号", 60, flagAC);
-                Menu.NativeQuery(10, 0, flagAC ? 1 : 0, 0L, "");
+                if (suppressToggleCallbacks) return;
+                flagAimbot = isOn;
+                Preferences.changeFeatureBool("自瞄最近敌对", 120, flagAimbot);
+                Menu.NativeQuery(10, 12, flagAimbot ? 1 : 0, 0L, "");
+                cardAimbot.setBackground(makeRoundBox(flagAimbot ? curTheme.cardOnBg : curTheme.cardBg, flagAimbot ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+                tvAimState.setText(flagAimbot ? "● 自瞄锁定中" : "○ 未开启");
+                tvAimState.setTextColor(flagAimbot ? curTheme.emerald : curTheme.textSec);
             }
         });
-        swAC = swHolderAC[0];
-        col.addView(rAC);
+        aimTop.addView(swAimbot);
+        cardAimbot.addView(aimTop);
 
-        // 1b. Anti-cheat: 100% Block Cloud Save Uploads (including auto cloud upload in Garden Town)
-        final Switch[] swHolderBlockCloud = new Switch[1];
-        LinearLayout rBlockCloud = makeSwitchRow("拦截云存档上传", "反作弊核心项：100%拦截游园镇获取重要物品自动云存及所有手动云存 (推荐常开)", flagBlockCloud, swHolderBlockCloud, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout aimSubRow = new LinearLayout(ctx);
+        aimSubRow.setOrientation(LinearLayout.HORIZONTAL);
+        aimSubRow.setGravity(Gravity.CENTER_VERTICAL);
+        final TextView tvWallLbl = new TextView(ctx);
+        tvWallLbl.setText("无视墙壁障碍物瞄准 (否则仅锁定视线无阻挡目标)");
+        tvWallLbl.setTextSize(10.5f);
+        tvWallLbl.setTextColor(curTheme.textSec);
+        tvWallLbl.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        aimSubRow.addView(tvWallLbl);
+
+        swAimIgnoreWall = new Switch(ctx);
+        swAimIgnoreWall.setChecked(flagAimIgnoreWall);
+        swAimIgnoreWall.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagBlockCloud = isOn;
-                Preferences.changeFeatureBool("100%拦截云存档上传", 84, flagBlockCloud);
-                Menu.NativeQuery(10, 11, flagBlockCloud ? 1 : 0, 0L, "");
+                if (suppressToggleCallbacks) return;
+                flagAimIgnoreWall = isOn;
+                Preferences.changeFeatureBool("自瞄无视掩体", 121, flagAimIgnoreWall);
+                Menu.NativeQuery(10, 15, flagAimIgnoreWall ? 1 : 0, 0L, "");
             }
         });
-        swBlockCloud = swHolderBlockCloud[0];
-        col.addView(rBlockCloud);
+        aimSubRow.addView(swAimIgnoreWall);
+        cardAimbot.addView(aimSubRow);
 
-        // 2. Ammo switch
-        final Switch[] swHolderAmmo = new Switch[1];
-        LinearLayout rAmmo = makeSwitchRow("子弹不减反增", "远程枪械/弓弩开火消耗弹药反而 +1", flagAmmo, swHolderAmmo, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout aimRangeRow = new LinearLayout(ctx);
+        aimRangeRow.setOrientation(LinearLayout.HORIZONTAL);
+        aimRangeRow.setGravity(Gravity.CENTER_VERTICAL);
+        aimRangeRow.setPadding(0, dp(3), 0, 0);
+
+        tvAimRangeVal = new TextView(ctx);
+        tvAimRangeVal.setText(aimMaxRangeX10 <= 0 ? "锁定距离: 不限" : String.format(Locale.US, "锁定距离: %.0fm", aimMaxRangeX10 / 10.0f));
+        tvAimRangeVal.setTextColor(curTheme.accent);
+        tvAimRangeVal.setTextSize(11f);
+        tvAimRangeVal.setTypeface(null, Typeface.BOLD);
+        aimRangeRow.addView(tvAimRangeVal, new LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final SeekBar sbAim = new SeekBar(ctx);
+        sbAim.setMax(50);
+        sbAim.setProgress(aimMaxRangeX10 / 10);
+        sbAim.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        sbAim.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+                aimMaxRangeX10 = progress * 10;
+                tvAimRangeVal.setText(aimMaxRangeX10 <= 0 ? "锁定距离: 不限" : String.format(Locale.US, "锁定距离: %.0fm", aimMaxRangeX10 / 10.0f));
+                if (fromUser) {
+                    modPrefs.edit().putInt("aim_max_range_x10", aimMaxRangeX10).apply();
+                    Menu.NativeQuery(17, aimMaxRangeX10, espLineMode, 0L, "");
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) {}
+        });
+        aimRangeRow.addView(sbAim);
+        cardAimbot.addView(aimRangeRow);
+        col.addView(cardAimbot, aimLp);
+        registerFeature("战斗辅助", "智能自瞄", "锁定最近敌对 · 支持无视掩体与距离限制", "自瞄 瞄准 锁头 穿墙 无视掩体 aimbot", 6, cardAimbot, svCombat, null);
+
+        // 2. ESP Overlay Card
+        cardEsp = new LinearLayout(ctx);
+        cardEsp.setOrientation(LinearLayout.VERTICAL);
+        cardEsp.setPadding(dp(12), dp(10), dp(12), dp(10));
+        cardEsp.setBackground(makeRoundBox(flagEsp ? curTheme.cardOnBg : curTheme.cardBg, flagEsp ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+        LinearLayout.LayoutParams espLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        espLp.setMargins(0, 0, 0, dp(6));
+
+        LinearLayout espTop = new LinearLayout(ctx);
+        espTop.setOrientation(LinearLayout.HORIZONTAL);
+        espTop.setGravity(Gravity.CENTER_VERTICAL);
+
+        final TextView tvEspT = new TextView(ctx);
+        tvEspT.setText("全图敌对绘制 ESP (方框 + 射线 + 血量距离)");
+        tvEspT.setTextSize(12.5f);
+        tvEspT.setTextColor(curTheme.textPri);
+        tvEspT.setTypeface(null, Typeface.BOLD);
+        tvEspT.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        espTop.addView(tvEspT);
+
+        tvEspState = new TextView(ctx);
+        tvEspState.setTextSize(10.5f);
+        tvEspState.setTypeface(null, Typeface.BOLD);
+        tvEspState.setPadding(0, 0, dp(6), 0);
+        tvEspState.setText(flagEsp ? "● 绘制透视中" : "○ 未开启");
+        tvEspState.setTextColor(flagEsp ? curTheme.emerald : curTheme.textSec);
+        espTop.addView(tvEspState);
+
+        swEsp = new Switch(ctx);
+        swEsp.setChecked(flagEsp);
+        swEsp.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagAmmo = isOn;
-                Preferences.changeFeatureBool("子弹不减反增", 40, flagAmmo);
-                Menu.NativeQuery(10, 1, flagAmmo ? 1 : 0, 0L, "");
+                if (suppressToggleCallbacks) return;
+                flagEsp = isOn;
+                Preferences.changeFeatureBool("绘制透视总开关", 122, flagEsp);
+                Menu.NativeQuery(10, 13, flagEsp ? 1 : 0, 0L, "");
+                cardEsp.setBackground(makeRoundBox(flagEsp ? curTheme.cardOnBg : curTheme.cardBg, flagEsp ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+                tvEspState.setText(flagEsp ? "● 绘制透视中" : "○ 未开启");
+                tvEspState.setTextColor(flagEsp ? curTheme.emerald : curTheme.textSec);
+                syncEspOverlayToMenu(Menu.getInstance());
             }
         });
-        swAmmo = swHolderAmmo[0];
-        col.addView(rAmmo);
+        espTop.addView(swEsp);
+        cardEsp.addView(espTop);
 
-        // 3. Durability switch + "补满耐久" button
-        final Switch[] swHolderEndur = new Switch[1];
-        LinearLayout rEndur = makeSwitchRow("锁定装备耐久", "全部武器、护甲防具零损耗", flagEndur, swHolderEndur, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout espSub1 = new LinearLayout(ctx);
+        espSub1.setOrientation(LinearLayout.HORIZONTAL);
+        espSub1.setGravity(Gravity.CENTER_VERTICAL);
+        espSub1.setPadding(0, dp(4), 0, 0);
+
+        final TextView tvB = new TextView(ctx); tvB.setText("方框 "); tvB.setTextSize(10.5f); tvB.setTextColor(curTheme.textSec);
+        swEspBox = new Switch(ctx); swEspBox.setChecked(flagEspBox);
+        swEspBox.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagEndur = isOn;
-                Preferences.changeFeatureBool("锁定武器/装备耐久", 41, flagEndur);
-                Menu.NativeQuery(10, 2, flagEndur ? 1 : 0, 0L, "");
+                if (suppressToggleCallbacks) return;
+                flagEspBox = isOn;
+                Preferences.changeFeatureBool("绘制方框", 123, flagEspBox);
+                Menu.NativeQuery(10, 16, flagEspBox ? 1 : 0, 0L, "");
+                syncEspOverlayToMenu(Menu.getInstance());
             }
         });
-        swEndur = swHolderEndur[0];
-        final Button btnFixEndur = makePillBtn("补满耐久", curTheme.btnBlue, 26);
-        btnFixEndur.setTextSize(10);
-        btnFixEndur.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                Menu.NativeQuery(7, 0, 0, 0L, "");
-                Toast.makeText(ctx, "已补满身上及背包装备耐久", Toast.LENGTH_SHORT).show();
-            }
-        });
-        rEndur.addView(btnFixEndur, rEndur.getChildCount() - 1);
-        col.addView(rEndur);
-
-        // 4. Instant interact switch (includes tree, mine, furniture chopping, pickup, home)
-        final Switch[] swHolderInst = new Switch[1];
-        LinearLayout rInst = makeSwitchRow("关闭交互时间", "砍树/采矿/砍家具/采集/拾取/开箱/回家0秒瞬时交互无需读条", flagInstant, swHolderInst, new CompoundButton.OnCheckedChangeListener() {
+        final TextView tvL = new TextView(ctx); tvL.setText("  射线 "); tvL.setTextSize(10.5f); tvL.setTextColor(curTheme.textSec);
+        swEspLine = new Switch(ctx); swEspLine.setChecked(flagEspLine);
+        swEspLine.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagInstant = isOn;
-                Preferences.changeFeatureBool("关闭交互时间", 71, flagInstant);
-                Menu.NativeQuery(10, 4, flagInstant ? 1 : 0, 0L, "");
+                if (suppressToggleCallbacks) return;
+                flagEspLine = isOn;
+                Preferences.changeFeatureBool("绘制射线", 124, flagEspLine);
+                Menu.NativeQuery(10, 17, flagEspLine ? 1 : 0, 0L, "");
+                syncEspOverlayToMenu(Menu.getInstance());
             }
         });
-        swInstant = swHolderInst[0];
-        col.addView(rInst);
-
-        // 5. Infinite stack switch (strictly warehouse only and matches durability/NBT)
-        final Switch[] swHolderInfStk = new Switch[1];
-        LinearLayout rInfStk = makeSwitchRow("仓库无限堆叠", "仅仓库生效，且仅限相同NBT/耐久度物品无限堆叠", flagInfStack, swHolderInfStk, new CompoundButton.OnCheckedChangeListener() {
+        final TextView tvI = new TextView(ctx); tvI.setText("  名字血量 "); tvI.setTextSize(10.5f); tvI.setTextColor(curTheme.textSec);
+        swEspInfo = new Switch(ctx); swEspInfo.setChecked(flagEspInfo);
+        swEspInfo.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagInfStack = isOn;
-                Preferences.changeFeatureBool("无限堆叠(仓库)", 72, flagInfStack);
-                Menu.NativeQuery(10, 5, flagInfStack ? 1 : 0, 0L, "");
+                if (suppressToggleCallbacks) return;
+                flagEspInfo = isOn;
+                Preferences.changeFeatureBool("绘制信息血条", 125, flagEspInfo);
+                Menu.NativeQuery(10, 18, flagEspInfo ? 1 : 0, 0L, "");
+                syncEspOverlayToMenu(Menu.getInstance());
             }
         });
-        swInfStack = swHolderInfStk[0];
-        col.addView(rInfStk);
+        espSub1.addView(tvB); espSub1.addView(swEspBox);
+        espSub1.addView(tvL); espSub1.addView(swEspLine);
+        espSub1.addView(tvI); espSub1.addView(swEspInfo);
+        cardEsp.addView(espSub1);
 
-        // 6. Noclip switch
-        final Switch[] swHolderNoclip = new Switch[1];
-        LinearLayout rNoclip = makeSwitchRow("穿墙模式", "关闭主角实体碰撞箱，自由穿行任何障碍与地图", flagNoclip, swHolderNoclip, new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout espSub2 = new LinearLayout(ctx);
+        espSub2.setOrientation(LinearLayout.HORIZONTAL);
+        espSub2.setGravity(Gravity.CENTER_VERTICAL);
+        espSub2.setPadding(0, dp(4), 0, 0);
+
+        final TextView tvN = new TextView(ctx); tvN.setText("含中立生物 "); tvN.setTextSize(10.5f); tvN.setTextColor(curTheme.textSec);
+        swEspNeutral = new Switch(ctx); swEspNeutral.setChecked(flagEspNeutral);
+        swEspNeutral.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagNoclip = isOn;
-                Preferences.changeFeatureBool("穿墙模式", 73, flagNoclip);
-                Menu.NativeQuery(10, 6, flagNoclip ? 1 : 0, 0L, "");
+                if (suppressToggleCallbacks) return;
+                flagEspNeutral = isOn;
+                Preferences.changeFeatureBool("绘制中立生物", 126, flagEspNeutral);
+                Menu.NativeQuery(10, 19, flagEspNeutral ? 1 : 0, 0L, "");
             }
         });
-        swNoclip = swHolderNoclip[0];
-        col.addView(rNoclip);
+        espSub2.addView(tvN); espSub2.addView(swEspNeutral);
 
-        // 7. Sewer highlight switch
-        final Switch[] swHolderSewer = new Switch[1];
-        LinearLayout rSewer = makeSwitchRow("下水道/洞穴全图高亮", "下水道、洞穴等黑暗地图始终全图照明高亮", flagSewer, swHolderSewer, new CompoundButton.OnCheckedChangeListener() {
-            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagSewer = isOn;
-                Preferences.changeFeatureBool("下水道高亮", 81, flagSewer);
-                Menu.NativeQuery(10, 8, flagSewer ? 1 : 0, 0L, "");
-                Toast.makeText(ctx, flagSewer ? "已开启下水道/洞穴全图高亮" : "已关闭下水道高亮", Toast.LENGTH_SHORT).show();
-            }
-        });
-        swSewer = swHolderSewer[0];
-        col.addView(rSewer);
+        final TextView tvOrg = new TextView(ctx); tvOrg.setText("  射线起点:"); tvOrg.setTextSize(10.5f); tvOrg.setTextColor(curTheme.textSec);
+        espSub2.addView(tvOrg);
+        final String[] modeNames = new String[] { "屏幕顶部", "屏幕中心", "玩家角色" };
+        final List<Button> modeBtns = new ArrayList<Button>();
+        for (int m = 0; m < 3; m++) {
+            final int mm = m;
+            Button mb = makePillBtn(modeNames[m], espLineMode == m ? curTheme.btnBlue : curTheme.btnSlate, 24);
+            mb.setTextSize(9.5f);
+            mb.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    espLineMode = mm;
+                    modPrefs.edit().putInt("esp_line_mode", espLineMode).apply();
+                    Menu.NativeQuery(17, aimMaxRangeX10, espLineMode, 0L, "");
+                    syncEspOverlayToMenu(Menu.getInstance());
+                    for (int k = 0; k < modeBtns.size(); k++) {
+                        modeBtns.get(k).setBackground(makeRoundBox(k == espLineMode ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                    }
+                }
+            });
+            modeBtns.add(mb);
+            espSub2.addView(mb);
+        }
+        cardEsp.addView(espSub2);
+        col.addView(cardEsp, espLp);
+        registerFeature("战斗辅助", "全图透视绘制 (ESP)", "方框、射线、名字血条与中立生物显示", "绘制 透视 esp 方框 射线 血条", 6, cardEsp, svCombat, null);
 
-        // 8. Always event switch
-        final Switch[] swHolderEvent = new Switch[1];
-        LinearLayout rEvent = makeSwitchRow("限时活动全开放", "周末/节日/限时开放的活动玩法与商人常驻开放", flagEvent, swHolderEvent, new CompoundButton.OnCheckedChangeListener() {
-            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagEvent = isOn;
-                Preferences.changeFeatureBool("限时活动开放", 82, flagEvent);
-                Menu.NativeQuery(10, 9, flagEvent ? 1 : 0, 0L, "");
-                Toast.makeText(ctx, flagEvent ? "已开启限时活动全开放" : "已恢复原版限时活动开放规则", Toast.LENGTH_SHORT).show();
-            }
-        });
-        swEvent = swHolderEvent[0];
-        col.addView(rEvent);
-
-        // 9. Phonograph local MP3 switch
-        final Switch[] swHolderPhono = new Switch[1];
-        LinearLayout rPhono = makeSwitchRow("留声机播放本地音乐", "家中留声机扫描播放 /sdcard/Music 或 /sdcard/AresMod/Music 的MP3", flagPhono, swHolderPhono, new CompoundButton.OnCheckedChangeListener() {
-            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagPhono = isOn;
-                Preferences.changeFeatureBool("留声机播放本地音乐", 83, flagPhono);
-                Menu.NativeQuery(10, 10, flagPhono ? 1 : 0, 0L, "");
-                Toast.makeText(ctx, flagPhono ? "已开启留声机播放本地MP3 (/sdcard/Music 或 /sdcard/AresMod/Music)" : "已恢复原版留声机音乐", Toast.LENGTH_SHORT).show();
-            }
-        });
-        swPhono = swHolderPhono[0];
-        col.addView(rPhono);
-
-        // 10. Unlock paid items switch
-        final Switch[] swHolderPaid = new Switch[1];
-        LinearLayout rPaid = makeSwitchRow("一键解锁全部付费道具", "猎人小屋/哈士奇/猪王/商城与DLC扩展内容", flagPaid, swHolderPaid, new CompoundButton.OnCheckedChangeListener() {
-            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagPaid = isOn;
-                Preferences.changeFeatureBool("一键解锁全部付费道具", 70, flagPaid);
-                Menu.NativeQuery(10, 3, flagPaid ? 1 : 0, 0L, "");
-                Toast.makeText(ctx, flagPaid ? "已本地开启全付费道具解锁" : "已恢复原始付费状态", Toast.LENGTH_SHORT).show();
-            }
-        });
-        swPaid = swHolderPaid[0];
-        col.addView(rPaid);
-
-        // 11. Blueprints row + button
-        LinearLayout rBp = new LinearLayout(ctx);
-        rBp.setOrientation(LinearLayout.HORIZONTAL);
-        rBp.setGravity(Gravity.CENTER_VERTICAL);
-        rBp.setPadding(dp(12), dp(8), dp(12), dp(8));
-        rBp.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
-        LinearLayout.LayoutParams bpLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        bpLp.setMargins(0, 0, 0, dp(5));
-        rBp.setLayoutParams(bpLp);
-
-        LinearLayout bpCol = new LinearLayout(ctx);
-        bpCol.setOrientation(LinearLayout.VERTICAL);
-        bpCol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView tvBpT = new TextView(ctx);
-        tvBpT.setText("一键解锁全部蓝图");
-        tvBpT.setTextSize(12f);
-        tvBpT.setTextColor(curTheme.textPri);
-        tvBpT.setTypeface(null, Typeface.BOLD);
-        bpCol.addView(tvBpT);
-        TextView tvBpS = new TextView(ctx);
-        tvBpS.setText("解锁全部 65+ 工作台/武器/防具/建筑蓝图");
-        tvBpS.setTextSize(10.5f);
-        tvBpS.setTextColor(curTheme.textSec);
-        tvBpS.setPadding(0, dp(2), 0, 0);
-        bpCol.addView(tvBpS);
-        rBp.addView(bpCol);
-
-        final Button btnBpGo = makePillBtn("立即解锁全部蓝图", curTheme.btnGreen, 26);
-        btnBpGo.setTextSize(10);
-        btnBpGo.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                Menu.NativeQuery(6, 0, 0, 0L, "");
-                mainH.postDelayed(new Runnable() { @Override public void run() { pollSnapshot(); } }, 220);
-                Toast.makeText(ctx, "已静默解锁全部蓝图", Toast.LENGTH_SHORT).show();
-            }
-        });
-        rBp.addView(btnBpGo);
-        otherFeatureRows.add(rBp);
-        otherFeatureTitles.add(tvBpT);
-        otherFeatureSubs.add(tvBpS);
-        col.addView(rBp);
-
-        // 12. Saved Props row with Save & Clear buttons
-        final Switch[] swHolderProps = new Switch[1];
-        LinearLayout rProps = makeSwitchRow("属性配置持久化", "进存档自动加载已保存的数值与锁定状态", flagAutoProps, swHolderProps, new CompoundButton.OnCheckedChangeListener() {
-            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
-                flagAutoProps = isOn;
-                modPrefs.edit().putBoolean("auto_restore_props", flagAutoProps).apply();
-                Toast.makeText(ctx, flagAutoProps ? "下次进游戏将自动加载属性配置" : "已暂停下次进游戏自动加载", Toast.LENGTH_SHORT).show();
-            }
-        });
-        swAutoProps = swHolderProps[0];
-
-        final Button btnSaveProps = makePillBtn("保存配置", curTheme.btnGreen, 26);
-        btnSaveProps.setTextSize(10);
-        btnSaveProps.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                saveCurrentPropsConfig();
-                Toast.makeText(ctx, "已保存当前 " + savedPropVals.size() + " 项属性配置", Toast.LENGTH_SHORT).show();
-            }
-        });
-
-        final Button btnClearProps = makePillBtn("删除已存配置", curTheme.btnRed, 26);
-        btnClearProps.setTextSize(10);
-        btnClearProps.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                clearSavedPropsConfig();
-                Toast.makeText(ctx, "已删除当前保存的属性配置", Toast.LENGTH_SHORT).show();
-            }
-        });
-
-        rProps.addView(btnSaveProps, rProps.getChildCount() - 1);
-        rProps.addView(btnClearProps, rProps.getChildCount() - 1);
-        col.addView(rProps);
-
-        // 13. Machine Gun mode (Kept as full Card with Slider & Presets)
+        // 3. Machine Gun mode Card
         cardMG = new LinearLayout(ctx);
         cardMG.setOrientation(LinearLayout.VERTICAL);
         cardMG.setPadding(dp(12), dp(10), dp(12), dp(10));
         cardMG.setBackground(makeRoundBox(flagMG ? curTheme.cardOnBg : curTheme.cardBg, flagMG ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
         LinearLayout.LayoutParams mgLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        mgLp.setMargins(0, dp(4), 0, dp(4));
+        mgLp.setMargins(0, 0, 0, dp(6));
 
         LinearLayout mgTop = new LinearLayout(ctx);
         mgTop.setOrientation(LinearLayout.HORIZONTAL);
         mgTop.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView tvMgT = new TextView(ctx);
+        final TextView tvMgT = new TextView(ctx);
         tvMgT.setText("机关枪模式 (仅远程枪械/弓弩有效，近战刀棍不受影响)");
         tvMgT.setTextSize(12.5f);
         tvMgT.setTextColor(curTheme.textPri);
@@ -3895,7 +5624,7 @@ public final class ModConsole {
         mgTop.addView(swMG);
         cardMG.addView(mgTop);
 
-        TextView tvMgSub = new TextView(ctx);
+        final TextView tvMgSub = new TextView(ctx);
         tvMgSub.setText("开启后滑动右攻击轮盘不松手即可持续连射，松手即停");
         tvMgSub.setTextSize(10.5f);
         tvMgSub.setTextColor(curTheme.textSec);
@@ -3912,8 +5641,7 @@ public final class ModConsole {
         tvMgRateVal.setTextColor(curTheme.accent);
         tvMgRateVal.setTextSize(11.5f);
         tvMgRateVal.setTypeface(null, Typeface.BOLD);
-        LinearLayout.LayoutParams rLblLp = new LinearLayout.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT);
-        mgRateRow.addView(tvMgRateVal, rLblLp);
+        mgRateRow.addView(tvMgRateVal, new LinearLayout.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT));
 
         final SeekBar sbMg = new SeekBar(ctx);
         sbMg.setMax(590);
@@ -3955,33 +5683,2125 @@ public final class ModConsole {
         }
         cardMG.addView(mgRateRow);
         col.addView(cardMG, mgLp);
+        registerFeature("战斗辅助", "机关枪模式", "枪械/弓弩持续连射与自定义射速 (1~60发/秒)", "机关枪 连射 射速 弓弩 mg", 6, cardMG, svCombat, null);
+
+        // 4. NoShake
+        final Switch[] swHolderNoShake = new Switch[1];
+        LinearLayout rNoShake = makeSwitchRow("关闭开枪震动与受击震屏", "屏蔽开火重震 (Heavy) 与受击震屏 (Normal)，大幅提升连射视野稳定性", flagNoShake, swHolderNoShake, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagNoShake = isOn;
+                Preferences.changeFeatureBool("关闭开枪受击震动", 127, flagNoShake);
+                Menu.NativeQuery(10, 14, flagNoShake ? 1 : 0, 0L, "");
+                Toast.makeText(ctx, flagNoShake ? "已屏蔽开火重震与受击震屏" : "已恢复原版镜头震动", Toast.LENGTH_SHORT).show();
+            }
+        });
+        swNoShake = swHolderNoShake[0];
+        col.addView(rNoShake);
+        registerFeature("战斗辅助", "关闭开枪受击震动", "屏蔽开火后坐震动与受击震屏", "震动 后坐 镜头 抖动 noshake", 6, rNoShake, svCombat, null);
+
+        // 5. Ammo
+        final Switch[] swHolderAmmo = new Switch[1];
+        LinearLayout rAmmo = makeSwitchRow("子弹不减反增", "远程枪械/弓弩开火消耗弹药反而 +1", flagAmmo, swHolderAmmo, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagAmmo = isOn;
+                Preferences.changeFeatureBool("子弹不减反增", 40, flagAmmo);
+                Menu.NativeQuery(10, 1, flagAmmo ? 1 : 0, 0L, "");
+            }
+        });
+        swAmmo = swHolderAmmo[0];
+        col.addView(rAmmo);
+        registerFeature("战斗辅助", "子弹不减反增", "远程开火弹药不减反增", "子弹 弹药 箭矢 无限 ammo", 6, rAmmo, svCombat, null);
+
+        // 6. Durability + Fix button
+        final Switch[] swHolderEndur = new Switch[1];
+        LinearLayout rEndur = makeSwitchRow("锁定装备耐久", "全部武器、护甲防具零损耗，支持一键补满耐久", flagEndur, swHolderEndur, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagEndur = isOn;
+                Preferences.changeFeatureBool("锁定武器/装备耐久", 41, flagEndur);
+                Menu.NativeQuery(10, 2, flagEndur ? 1 : 0, 0L, "");
+            }
+        });
+        swEndur = swHolderEndur[0];
+        final Button btnFixEndur = makePillBtn("补满耐久", curTheme.btnBlue, 26);
+        btnFixEndur.setTextSize(10);
+        btnFixEndur.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(7, 0, 0, 0L, "");
+                Toast.makeText(ctx, "已补满身上及背包装备耐久", Toast.LENGTH_SHORT).show();
+            }
+        });
+        rEndur.addView(btnFixEndur, rEndur.getChildCount() - 1);
+        col.addView(rEndur);
+        registerFeature("战斗辅助", "锁定与补满装备耐久", "锁定武器防具零损耗并可一键补满耐久", "耐久 损坏 武器 防具 修复", 6, rEndur, svCombat, null);
 
         themeRefreshHooks.add(new Runnable() {
             @Override public void run() {
-                for (View r : otherFeatureRows) {
-                    r.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
-                }
-                for (TextView t : otherFeatureTitles) {
-                    t.setTextColor(curTheme.textPri);
-                }
-                for (TextView s : otherFeatureSubs) {
-                    s.setTextColor(curTheme.textSec);
-                }
                 btnFixEndur.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
-                btnBpGo.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
-                btnSaveProps.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
-                btnClearProps.setBackground(makeRoundBox(curTheme.btnRed, 0x33FFFFFF, 1, dp(7)));
                 tvMgRateVal.setTextColor(curTheme.accent);
-                for (Button rb : rateBtns) {
-                    rb.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                tvAimT.setTextColor(curTheme.textPri);
+                tvWallLbl.setTextColor(curTheme.textSec);
+                tvEspT.setTextColor(curTheme.textPri);
+                tvB.setTextColor(curTheme.textSec);
+                tvL.setTextColor(curTheme.textSec);
+                tvI.setTextColor(curTheme.textSec);
+                tvN.setTextColor(curTheme.textSec);
+                tvOrg.setTextColor(curTheme.textSec);
+                tvMgT.setTextColor(curTheme.textPri);
+                tvMgSub.setTextColor(curTheme.textSec);
+                for (Button rb : rateBtns) rb.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                for (int k = 0; k < modeBtns.size(); k++) {
+                    modeBtns.get(k).setBackground(makeRoundBox(k == espLineMode ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
                 }
-                if (cardMG != null) {
-                    cardMG.setBackground(makeRoundBox(flagMG ? curTheme.cardOnBg : curTheme.cardBg, flagMG ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+                if (cardAimbot != null) cardAimbot.setBackground(makeRoundBox(flagAimbot ? curTheme.cardOnBg : curTheme.cardBg, flagAimbot ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+                if (tvAimRangeVal != null) tvAimRangeVal.setTextColor(curTheme.accent);
+                if (cardEsp != null) cardEsp.setBackground(makeRoundBox(flagEsp ? curTheme.cardOnBg : curTheme.cardBg, flagEsp ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+                if (cardMG != null) cardMG.setBackground(makeRoundBox(flagMG ? curTheme.cardOnBg : curTheme.cardBg, flagMG ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+            }
+        });
+
+        return wrap;
+    }
+
+    // =========================================================================
+    //  TAB 8: 生成实体 (官方分类与细分 + 搜索 + 原生阵营精确保留)
+    // =========================================================================
+    private interface UnitPickCallback {
+        void onPicked(SpawnUnitInfo unit);
+    }
+
+    private FrameLayout unitPickModalOverlay;
+    private LinearLayout unitPickModalCard;
+    private TextView unitPickTitle;
+    private EditText etUnitPickSearch;
+    private final List<SpawnUnitInfo> unitPickRows = new ArrayList<SpawnUnitInfo>();
+    private BaseAdapter unitPickAdapter;
+    private UnitPickCallback unitPickCb;
+
+    private void showUnitPickerModal(String title, UnitPickCallback callback) {
+        unitPickCb = callback;
+        if (unitPickModalOverlay == null) {
+            unitPickModalOverlay = new FrameLayout(ctx);
+            unitPickModalOverlay.setBackgroundColor(0xB8000000);
+            unitPickModalOverlay.setVisibility(View.GONE);
+            unitPickModalOverlay.setClickable(true);
+            unitPickModalOverlay.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { unitPickModalOverlay.setVisibility(View.GONE); }
+            });
+
+            unitPickModalCard = new LinearLayout(ctx);
+            unitPickModalCard.setOrientation(LinearLayout.VERTICAL);
+            unitPickModalCard.setPadding(dp(12), dp(10), dp(12), dp(10));
+            unitPickModalCard.setBackground(makeRoundBox(curTheme.panelBg | 0xFF000000, curTheme.accent, dp(2), dp(12)));
+            unitPickModalCard.setClickable(true);
+            FrameLayout.LayoutParams cLp = new FrameLayout.LayoutParams(dp(440), dp(300), Gravity.CENTER);
+            unitPickModalOverlay.addView(unitPickModalCard, cLp);
+
+            LinearLayout hdr = new LinearLayout(ctx);
+            hdr.setOrientation(LinearLayout.HORIZONTAL);
+            hdr.setGravity(Gravity.CENTER_VERTICAL);
+            unitPickTitle = new TextView(ctx);
+            unitPickTitle.setTextColor(curTheme.textPri);
+            unitPickTitle.setTextSize(13f);
+            unitPickTitle.setTypeface(null, Typeface.BOLD);
+            unitPickTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            hdr.addView(unitPickTitle);
+
+            Button btnClosePick = makePillBtn("关闭", curTheme.btnRed, 26);
+            btnClosePick.setTextSize(10f);
+            btnClosePick.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { unitPickModalOverlay.setVisibility(View.GONE); }
+            });
+            hdr.addView(btnClosePick);
+            unitPickModalCard.addView(hdr);
+
+            etUnitPickSearch = makeDarkEdit("搜索任意实体名称 / ID / 描述 (全量无分类限制)...", false);
+            etUnitPickSearch.setTextSize(11f);
+            LinearLayout.LayoutParams eLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(30));
+            eLp.setMargins(0, dp(6), 0, dp(6));
+            unitPickModalCard.addView(etUnitPickSearch, eLp);
+
+            final Runnable filterPick = new Runnable() {
+                @Override public void run() {
+                    String q = etUnitPickSearch.getText().toString().trim().toLowerCase(Locale.US);
+                    unitPickRows.clear();
+                    List<SpawnUnitInfo> all = loadUnitsCatalog(ctx, false);
+                    for (SpawnUnitInfo u : all) {
+                        if (!q.isEmpty()) {
+                            String hay = (u.name + " " + u.id + " " + u.sub + " " + u.desc).toLowerCase(Locale.US);
+                            if (!hay.contains(q)) continue;
+                        }
+                        unitPickRows.add(u);
+                    }
+                    if (unitPickAdapter != null) unitPickAdapter.notifyDataSetChanged();
+                }
+            };
+            cricketPickHook = filterPick;
+
+            etUnitPickSearch.addTextChangedListener(new TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+                @Override public void onTextChanged(CharSequence s, int a, int b, int c) { filterPick.run(); }
+                @Override public void afterTextChanged(Editable s) {}
+            });
+
+            ListView lv = new ListView(ctx);
+            lv.setDividerHeight(dp(4));
+            lv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+            unitPickAdapter = new BaseAdapter() {
+                @Override public int getCount() { return unitPickRows.size(); }
+                @Override public Object getItem(int pos) { return unitPickRows.get(pos); }
+                @Override public long getItemId(int pos) { return unitPickRows.get(pos).id; }
+                @Override public View getView(int pos, View cv, ViewGroup parent) {
+                    final SpawnUnitInfo u = unitPickRows.get(pos);
+                    LinearLayout row = new LinearLayout(ctx);
+                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    row.setGravity(Gravity.CENTER_VERTICAL);
+                    row.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
+                    row.setPadding(dp(8), dp(6), dp(8), dp(6));
+
+                    LinearLayout col = new LinearLayout(ctx);
+                    col.setOrientation(LinearLayout.VERTICAL);
+                    col.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                    TextView t1 = new TextView(ctx);
+                    t1.setText(u.name + "  #" + u.id);
+                    t1.setTextColor(curTheme.textPri);
+                    t1.setTextSize(11.5f);
+                    t1.setTypeface(null, Typeface.BOLD);
+                    col.addView(t1);
+
+                    String facTxt = (u.fac == 3 ? "原:友军" : (u.fac == 2 ? "原:中立" : "原:敌对"));
+                    TextView t2 = new TextView(ctx);
+                    t2.setText(u.sub + " · " + facTxt + (u.exp > 0 ? (" · EXP " + u.exp) : ""));
+                    t2.setTextColor(curTheme.textSec);
+                    t2.setTextSize(9.8f);
+                    col.addView(t2);
+                    row.addView(col);
+
+                    TextView pickLbl = new TextView(ctx);
+                    pickLbl.setText("选择");
+                    pickLbl.setTextColor(curTheme.accent);
+                    pickLbl.setTextSize(11f);
+                    pickLbl.setTypeface(null, Typeface.BOLD);
+                    row.addView(pickLbl);
+
+                    row.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            unitPickModalOverlay.setVisibility(View.GONE);
+                            if (unitPickCb != null) unitPickCb.onPicked(u);
+                        }
+                    });
+                    return row;
+                }
+            };
+            lv.setAdapter(unitPickAdapter);
+            unitPickModalCard.addView(lv);
+
+            if (backdropView != null) {
+                backdropView.addView(unitPickModalOverlay, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+        }
+        unitPickModalCard.setBackground(makeRoundBox(curTheme.panelBg | 0xFF000000, curTheme.accent, dp(2), dp(12)));
+        styleEditBox(etUnitPickSearch);
+        unitPickTitle.setText(title);
+        etUnitPickSearch.setText("");
+        if (cricketPickHook != null) cricketPickHook.run();
+        unitPickModalOverlay.setVisibility(View.VISIBLE);
+    }
+
+    private FrameLayout buildSpawnEntityPage() {
+        final FrameLayout wrap = new FrameLayout(ctx);
+        LinearLayout root = new LinearLayout(ctx);
+        root.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(root, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        final int[] curCls = new int[] { 0 }; // 0=全部, 1=Unit(战斗/野外), 2=NPC, 3=Worker(营地工人)
+        final int[] curFac = new int[] { 0 }; // 0=全部, 1=敌对, 2=中立, 3=友军
+        final String[] curSub = new String[] { "全部细分" };
+        final List<SpawnUnitInfo> visibleUnits = new ArrayList<SpawnUnitInfo>();
+
+        LinearLayout topBar = new LinearLayout(ctx);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        final TextView tvUnitStatus = new TextView(ctx);
+        tvUnitStatus.setText("生成实体: 读取官方实体分类库中...");
+        tvUnitStatus.setTextColor(curTheme.accent);
+        tvUnitStatus.setTextSize(10.5f);
+        tvUnitStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+        tvUnitStatus.setPadding(dp(8), dp(4), dp(8), dp(4));
+        tvUnitStatus.setSingleLine(true);
+        tvUnitStatus.setEllipsize(TextUtils.TruncateAt.END);
+        tvUnitStatus.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        topBar.addView(tvUnitStatus);
+
+        final Button btnClearSpawned = makePillBtn("清除已生成", curTheme.btnRed, 26);
+        btnClearSpawned.setTextSize(9.8f);
+        btnClearSpawned.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(23, 2, 0, 0L, "");
+                Toast.makeText(ctx, "已发送清除全部生成实体指令", Toast.LENGTH_SHORT).show();
+            }
+        });
+        topBar.addView(btnClearSpawned);
+
+        final Button btnRescanUnits = makePillBtn("刷新实体库", curTheme.btnSlate, 26);
+        btnRescanUnits.setTextSize(9.8f);
+        btnRescanUnits.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                File fDir = ctx.getFilesDir();
+                if (fDir != null) Menu.NativeQuery(12, 1, 0, 0L, fDir.getAbsolutePath());
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        loadUnitsCatalog(ctx, true);
+                        if (unitDynReloadHook != null) unitDynReloadHook.run();
+                    }
+                }, 250);
+            }
+        });
+        topBar.addView(btnRescanUnits);
+        LinearLayout.LayoutParams tbLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tbLp.setMargins(0, 0, 0, dp(4));
+        root.addView(topBar, tbLp);
+
+        // Row 1: Official eUnitClass bar
+        HorizontalScrollView hsvCls = new HorizontalScrollView(ctx);
+        hsvCls.setHorizontalScrollBarEnabled(false);
+        LinearLayout clsRow = new LinearLayout(ctx);
+        clsRow.setOrientation(LinearLayout.HORIZONTAL);
+        hsvCls.addView(clsRow);
+        LinearLayout.LayoutParams hcLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hcLp.setMargins(0, 0, 0, dp(4));
+        root.addView(hsvCls, hcLp);
+
+        // Row 2: Dynamic fine sub-classification bar
+        HorizontalScrollView hsvSub = new HorizontalScrollView(ctx);
+        hsvSub.setHorizontalScrollBarEnabled(false);
+        final LinearLayout subRow = new LinearLayout(ctx);
+        subRow.setOrientation(LinearLayout.HORIZONTAL);
+        hsvSub.addView(subRow);
+        LinearLayout.LayoutParams hsLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hsLp.setMargins(0, 0, 0, dp(4));
+        root.addView(hsvSub, hsLp);
+
+        // Row 3: Search + Faction filter pill
+        LinearLayout searchRow = new LinearLayout(ctx);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        final EditText etUnitSearch = makeDarkEdit("搜索实体名称 / ID / 细分 / 描述...", false);
+        etUnitSearch.setTextSize(11f);
+        etUnitSearch.setLayoutParams(new LinearLayout.LayoutParams(0, dp(29), 1f));
+        searchRow.addView(etUnitSearch);
+
+        final String[] facTitles = new String[] { "阵营:全部", "原阵营:敌对", "原阵营:中立", "原阵营:友军" };
+        final Button btnFacFilter = makePillBtn("阵营:全部", curTheme.btnBlue, 27);
+        btnFacFilter.setTextSize(9.5f);
+        searchRow.addView(btnFacFilter);
+        LinearLayout.LayoutParams srLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        srLp.setMargins(0, 0, 0, dp(4));
+        root.addView(searchRow, srLp);
+
+        final ListView lvUnits = new ListView(ctx);
+        lvUnits.setDividerHeight(dp(4));
+        lvUnits.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(lvUnits);
+
+        final BaseAdapter unitAdapter = new BaseAdapter() {
+            @Override public int getCount() { return visibleUnits.size(); }
+            @Override public Object getItem(int pos) { return visibleUnits.get(pos); }
+            @Override public long getItemId(int pos) { return visibleUnits.get(pos).id; }
+            @Override public View getView(int pos, View cv, ViewGroup parent) {
+                final SpawnUnitInfo u = visibleUnits.get(pos);
+                LinearLayout card = new LinearLayout(ctx);
+                card.setOrientation(LinearLayout.HORIZONTAL);
+                card.setGravity(Gravity.CENTER_VERTICAL);
+                card.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
+                card.setPadding(dp(10), dp(6), dp(8), dp(6));
+
+                LinearLayout info = new LinearLayout(ctx);
+                info.setOrientation(LinearLayout.VERTICAL);
+                info.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                String facBadge = (u.fac == 3 ? " [友军]" : (u.fac == 2 ? " [中立]" : " [敌对]"));
+                int facColor = (u.fac == 3 ? curTheme.emerald : (u.fac == 2 ? 0xFFFBBF24 : 0xFFF87171));
+                TextView t1 = new TextView(ctx);
+                t1.setText(u.name + "  #" + u.id + facBadge);
+                t1.setTextSize(11.8f);
+                t1.setTypeface(null, Typeface.BOLD);
+                t1.setTextColor(facColor);
+                info.addView(t1);
+
+                String clsName = (u.cls == 3 ? "官方:Worker营地工人" : (u.cls == 2 ? "官方:NPC人物" : "官方:Unit作战单位"));
+                StringBuilder meta = new StringBuilder();
+                meta.append(clsName).append(" · 细分:").append(u.sub);
+                if (u.hp > 0) meta.append(" · HP ").append(u.hp);
+                if (u.exp > 0) meta.append(" · EXP ").append(u.exp);
+                if (!u.desc.isEmpty()) meta.append(" · ").append(u.desc);
+
+                TextView t2 = new TextView(ctx);
+                t2.setText(meta.toString());
+                t2.setTextSize(9.8f);
+                t2.setTextColor(curTheme.textSec);
+                t2.setMaxLines(2);
+                t2.setEllipsize(TextUtils.TruncateAt.END);
+                info.addView(t2);
+                card.addView(info);
+
+                Button btnSpawn = makePillBtn("生成", u.fac == 3 ? curTheme.btnGreen : (u.fac == 2 ? curTheme.btnBlue : curTheme.btnRed), 26);
+                btnSpawn.setTextSize(10f);
+                View.OnClickListener spawnClick = new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        Menu.NativeQuery(23, 1, u.id, 0L, "");
+                        String fLbl = (u.fac == 3 ? "友军" : (u.fac == 2 ? "中立" : "敌对"));
+                        Toast.makeText(ctx, "正在当前位置生成[" + fLbl + "] " + u.name + " (#" + u.id + ")", Toast.LENGTH_SHORT).show();
+                    }
+                };
+                btnSpawn.setOnClickListener(spawnClick);
+                card.setOnClickListener(spawnClick);
+                card.addView(btnSpawn);
+                return card;
+            }
+        };
+        lvUnits.setAdapter(unitAdapter);
+
+        final List<Button> clsBtns = new ArrayList<Button>();
+        final List<Button> subBtns = new ArrayList<Button>();
+        final Runnable rebuildUnitList = new Runnable() {
+            @Override public void run() {
+                List<SpawnUnitInfo> all = loadUnitsCatalog(ctx, false);
+                visibleUnits.clear();
+                String q = etUnitSearch.getText().toString().trim().toLowerCase(Locale.US);
+                int enemyCnt = 0, neuCnt = 0, allyCnt = 0;
+                for (SpawnUnitInfo u : all) {
+                    if (curCls[0] != 0 && u.cls != curCls[0]) continue;
+                    if (!"全部细分".equals(curSub[0]) && !curSub[0].equals(u.sub)) continue;
+                    if (curFac[0] != 0 && u.fac != curFac[0]) continue;
+                    if (!q.isEmpty()) {
+                        String hay = (u.name + " " + u.id + " " + u.sub + " " + u.desc).toLowerCase(Locale.US);
+                        if (!hay.contains(q)) continue;
+                    }
+                    visibleUnits.add(u);
+                    if (u.fac == 1) enemyCnt++;
+                    else if (u.fac == 2) neuCnt++;
+                    else allyCnt++;
+                }
+                unitAdapter.notifyDataSetChanged();
+                tvUnitStatus.setText("共 " + all.size() + " 实体 · 显示 " + visibleUnits.size() +
+                    " (敌:" + enemyCnt + " 中:" + neuCnt + " 友:" + allyCnt + ") · 点击即按原阵营生成");
+            }
+        };
+
+        final Runnable rebuildSubChips = new Runnable() {
+            @Override public void run() {
+                subRow.removeAllViews();
+                subBtns.clear();
+                List<SpawnUnitInfo> all = loadUnitsCatalog(ctx, false);
+                final LinkedHashMap<String, Integer> counts = new LinkedHashMap<String, Integer>();
+                int totalCls = 0;
+                for (SpawnUnitInfo u : all) {
+                    if (curCls[0] != 0 && u.cls != curCls[0]) continue;
+                    totalCls++;
+                    Integer c = counts.get(u.sub);
+                    counts.put(u.sub, c == null ? 1 : (c + 1));
+                }
+                List<String> subs = new ArrayList<String>(counts.keySet());
+                Collections.sort(subs, new Comparator<String>() {
+                    @Override public int compare(String a, String b) {
+                        return counts.get(b) - counts.get(a);
+                    }
+                });
+                subs.add(0, "全部细分");
+                if (!subs.contains(curSub[0])) curSub[0] = "全部细分";
+
+                for (final String s : subs) {
+                    int cnt = "全部细分".equals(s) ? totalCls : counts.get(s);
+                    final Button sb = makePillBtn(s + "(" + cnt + ")", s.equals(curSub[0]) ? curTheme.btnGreen : curTheme.btnSlate, 23);
+                    sb.setTextSize(9.5f);
+                    sb.setTag(s);
+                    sb.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            curSub[0] = s;
+                            for (Button b : subBtns) {
+                                boolean act = s.equals(b.getTag());
+                                b.setBackground(makeRoundBox(act ? curTheme.btnGreen : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                            }
+                            rebuildUnitList.run();
+                        }
+                    });
+                    subBtns.add(sb);
+                    subRow.addView(sb);
+                }
+            }
+        };
+
+        String[] clsLabels = new String[] { "全部实体", "Unit 战斗/生物", "NPC 剧情/角色", "Worker 营地工人" };
+        for (int i = 0; i < clsLabels.length; i++) {
+            final int ci = i;
+            Button cbBtn = makePillBtn(clsLabels[i], i == 0 ? curTheme.btnBlue : curTheme.btnSlate, 25);
+            cbBtn.setTextSize(9.8f);
+            cbBtn.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    curCls[0] = ci;
+                    curSub[0] = "全部细分";
+                    for (int k = 0; k < clsBtns.size(); k++) {
+                        clsBtns.get(k).setBackground(makeRoundBox(k == curCls[0] ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                    }
+                    rebuildSubChips.run();
+                    rebuildUnitList.run();
+                }
+            });
+            clsBtns.add(cbBtn);
+            clsRow.addView(cbBtn);
+        }
+
+        btnFacFilter.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                curFac[0] = (curFac[0] + 1) % 4;
+                btnFacFilter.setText(facTitles[curFac[0]]);
+                rebuildUnitList.run();
+            }
+        });
+        etUnitSearch.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { rebuildUnitList.run(); }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
+        unitDynReloadHook = new Runnable() {
+            @Override public void run() {
+                rebuildSubChips.run();
+                rebuildUnitList.run();
+            }
+        };
+        themeRefreshHooks.add(new Runnable() {
+            @Override public void run() {
+                tvUnitStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+                tvUnitStatus.setTextColor(curTheme.accent);
+                btnClearSpawned.setBackground(makeRoundBox(curTheme.btnRed, 0x33FFFFFF, 1, dp(7)));
+                btnRescanUnits.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                styleEditBox(etUnitSearch);
+                btnFacFilter.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
+                for (int k = 0; k < clsBtns.size(); k++) {
+                    clsBtns.get(k).setBackground(makeRoundBox(k == curCls[0] ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                }
+                for (Button b : subBtns) {
+                    boolean act = curSub[0].equals(b.getTag());
+                    b.setBackground(makeRoundBox(act ? curTheme.btnGreen : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                }
+                unitAdapter.notifyDataSetChanged();
+            }
+        });
+
+        loadUnitsCatalog(ctx, false);
+        rebuildSubChips.run();
+        rebuildUnitList.run();
+        registerFeature("生成实体", "生成全游戏实体 (官方分类与原阵营)", "按Unit/NPC/Worker官方大类与细分列出全实体并按原阵营生成", "生成 实体 刷怪 召唤 boss 野生 工人 spawn entity", 8, wrap, null, null);
+        return wrap;
+    }
+
+    // =========================================================================
+    //  TAB 9: 地图传送 (严格按原游戏章节与父子Belong归属分级 · 支持搜索与一键传送)
+    // =========================================================================
+    private FrameLayout buildMapTeleportPage() {
+        final FrameLayout wrap = new FrameLayout(ctx);
+        LinearLayout root = new LinearLayout(ctx);
+        root.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(root, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        final int[] curCat = new int[] { 0 };
+        final int[] curMode = new int[] { 0 }; // 0=树形分级, 1=仅大地图, 2=已去过
+        final boolean[] showInvalid = new boolean[] { false };
+        final Set<Integer> expandedIds = new HashSet<Integer>();
+        final Set<Integer> arrivedSet = new HashSet<Integer>();
+        final Set<Integer> ownSet = new HashSet<Integer>();
+        final int[] curSceneId = new int[] { 0 };
+        final List<MapEntry> visibleMaps = new ArrayList<MapEntry>();
+        final Map<Integer, MapEntry> mapById = new HashMap<Integer, MapEntry>();
+
+        // Top info bar
+        LinearLayout topBar = new LinearLayout(ctx);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        final TextView tvMapStatus = new TextView(ctx);
+        tvMapStatus.setText("地图传送: 读取全量地图配置中...");
+        tvMapStatus.setTextColor(curTheme.accent);
+        tvMapStatus.setTextSize(10.5f);
+        tvMapStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+        tvMapStatus.setPadding(dp(8), dp(4), dp(8), dp(4));
+        tvMapStatus.setSingleLine(true);
+        tvMapStatus.setEllipsize(TextUtils.TruncateAt.END);
+        tvMapStatus.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        topBar.addView(tvMapStatus);
+
+        final Button btnRefreshMap = makePillBtn("刷新地图", curTheme.btnSlate, 26);
+        btnRefreshMap.setTextSize(10);
+        btnRefreshMap.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(13, 0, 0, 0L, "");
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        loadMapsCatalog(ctx, true);
+                        if (mapStateRefreshHook != null) mapStateRefreshHook.run();
+                    }
+                }, 250);
+            }
+        });
+        topBar.addView(btnRefreshMap);
+        LinearLayout.LayoutParams tbLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tbLp.setMargins(0, 0, 0, dp(4));
+        root.addView(topBar, tbLp);
+
+        // Chapter filter bar
+        HorizontalScrollView hsv = new HorizontalScrollView(ctx);
+        hsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout catRow = new LinearLayout(ctx);
+        catRow.setOrientation(LinearLayout.HORIZONTAL);
+        final List<Button> catBtns = new ArrayList<Button>();
+        hsv.addView(catRow);
+        LinearLayout.LayoutParams hvLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hvLp.setMargins(0, 0, 0, dp(4));
+        root.addView(hsv, hvLp);
+
+        // Search & filter bar
+        LinearLayout searchRow = new LinearLayout(ctx);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        etMapSearchBox = makeDarkEdit("搜索地图名称 / 场景ID / 描述...", false);
+        etMapSearchBox.setTextSize(11);
+        etMapSearchBox.setLayoutParams(new LinearLayout.LayoutParams(0, dp(29), 1f));
+        searchRow.addView(etMapSearchBox);
+
+        final String[] modeTitles = new String[] { "树形分级", "仅大地图", "仅已去过" };
+        final Button btnMapMode = makePillBtn("树形分级", curTheme.btnBlue, 27);
+        btnMapMode.setTextSize(9.5f);
+        searchRow.addView(btnMapMode);
+
+        final Button btnToggleValid = makePillBtn("含未实装:关", curTheme.btnSlate, 27);
+        btnToggleValid.setTextSize(9.5f);
+        searchRow.addView(btnToggleValid);
+
+        LinearLayout.LayoutParams srLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        srLp.setMargins(0, 0, 0, dp(4));
+        root.addView(searchRow, srLp);
+
+        final ListView lvMaps = new ListView(ctx);
+        lvMaps.setDividerHeight(dp(4));
+        lvMaps.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(lvMaps);
+
+        final BaseAdapter mapAdapter = new BaseAdapter() {
+            @Override public int getCount() { return visibleMaps.size(); }
+            @Override public Object getItem(int pos) { return visibleMaps.get(pos); }
+            @Override public long getItemId(int pos) { return visibleMaps.get(pos).id; }
+            @Override public View getView(int pos, View convertView, ViewGroup parent) {
+                final MapEntry m = visibleMaps.get(pos);
+                LinearLayout card = new LinearLayout(ctx);
+                card.setOrientation(LinearLayout.HORIZONTAL);
+                card.setGravity(Gravity.CENTER_VERTICAL);
+                boolean isCur = (m.id == curSceneId[0]);
+                boolean isParent = (m.childCount > 0 || m.depth == 0);
+                card.setBackground(makeRoundBox(
+                    isCur ? curTheme.cardOnBg : curTheme.cardBg,
+                    isCur ? curTheme.emerald : (isParent ? curTheme.panelEdge : curTheme.cardEdge),
+                    dp(1), dp(8)));
+
+                String q = etMapSearchBox.getText() != null ? etMapSearchBox.getText().toString().trim() : "";
+                int indentDp = q.isEmpty() && curMode[0] == 0 ? Math.min(3, m.depth) * 14 : 0;
+                card.setPadding(dp(8 + indentDp), dp(6), dp(8), dp(6));
+
+                if (q.isEmpty() && curMode[0] == 0 && m.childCount > 0) {
+                    TextView tvExp = new TextView(ctx);
+                    tvExp.setText(expandedIds.contains(m.id) ? "▾" : "▸");
+                    tvExp.setTextColor(curTheme.accent);
+                    tvExp.setTextSize(14);
+                    tvExp.setTypeface(null, Typeface.BOLD);
+                    tvExp.setPadding(dp(2), 0, dp(6), 0);
+                    card.addView(tvExp);
+                } else if (m.depth > 0 && q.isEmpty() && curMode[0] == 0) {
+                    TextView tvLeaf = new TextView(ctx);
+                    tvLeaf.setText("↳");
+                    tvLeaf.setTextColor(curTheme.textSec);
+                    tvLeaf.setTextSize(12);
+                    tvLeaf.setPadding(0, 0, dp(5), 0);
+                    card.addView(tvLeaf);
+                }
+
+                LinearLayout info = new LinearLayout(ctx);
+                info.setOrientation(LinearLayout.VERTICAL);
+                info.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                String chap = (m.cat >= 1 && m.cat < CHAPTER_NAMES.length) ? CHAPTER_NAMES[m.cat] : "主线";
+                StringBuilder titleSb = new StringBuilder();
+                if (!m.valid) titleSb.append("[测试] ");
+                titleSb.append(m.name).append(" (#").append(m.id).append(")");
+                if (isCur) titleSb.append("  ★当前");
+                else if (ownSet.contains(m.id)) titleSb.append("  [已占领]");
+                else if (arrivedSet.contains(m.id)) titleSb.append("  [已去过]");
+
+                TextView t1 = new TextView(ctx);
+                t1.setText(titleSb.toString());
+                t1.setTextSize(m.depth == 0 ? 12.2f : 11.4f);
+                t1.setTypeface(null, m.depth == 0 ? Typeface.BOLD : Typeface.NORMAL);
+                t1.setTextColor(isCur ? curTheme.emerald : curTheme.textPri);
+                info.addView(t1);
+
+                StringBuilder subSb = new StringBuilder();
+                subSb.append(chap);
+                if (m.belong > 0 && m.belong != m.id) {
+                    MapEntry pm = mapById.get(m.belong);
+                    subSb.append(" · 属: ").append(pm != null ? pm.name : ("#" + m.belong));
+                } else if (m.childCount > 0) {
+                    subSb.append(" · 含 ").append(m.childCount).append(" 个直属子地图");
+                }
+                if (!m.us.isEmpty()) subSb.append(" · ").append(m.us);
+                else if (!m.desc.isEmpty()) subSb.append(" · ").append(m.desc);
+
+                TextView t2 = new TextView(ctx);
+                t2.setText(subSb.toString());
+                t2.setTextSize(10f);
+                t2.setTextColor(curTheme.textSec);
+                t2.setMaxLines(2);
+                t2.setEllipsize(TextUtils.TruncateAt.END);
+                info.addView(t2);
+                card.addView(info);
+
+                Button btnGo = makePillBtn(isCur ? "重传" : "传送", isCur ? curTheme.btnSlate : curTheme.btnGreen, 26);
+                btnGo.setTextSize(10f);
+                btnGo.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        Menu.NativeQuery(20, m.id, m.spawn, 1L, "");
+                        Toast.makeText(ctx, "正在传送至: " + m.name + " (#" + m.id + ")", Toast.LENGTH_SHORT).show();
+                        mainH.postDelayed(new Runnable() {
+                            @Override public void run() {
+                                pollSnapshot();
+                                if (mapStateRefreshHook != null) mapStateRefreshHook.run();
+                            }
+                        }, 700);
+                    }
+                });
+                card.addView(btnGo);
+
+                if (m.childCount > 0 && q.isEmpty() && curMode[0] == 0) {
+                    card.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            if (expandedIds.contains(m.id)) expandedIds.remove(m.id);
+                            else expandedIds.add(m.id);
+                            if (mapDynReloadHook != null) mapDynReloadHook.run();
+                        }
+                    });
+                }
+                return card;
+            }
+        };
+        lvMaps.setAdapter(mapAdapter);
+
+        final Runnable rebuildMaps = new Runnable() {
+            @Override public void run() {
+                List<MapEntry> all = loadMapsCatalog(ctx, false);
+                mapById.clear();
+                for (MapEntry m : all) mapById.put(m.id, m);
+
+                String q = etMapSearchBox.getText() != null ? etMapSearchBox.getText().toString().trim().toLowerCase(Locale.US) : "";
+                visibleMaps.clear();
+
+                if (!q.isEmpty() || curMode[0] != 0) {
+                    for (MapEntry m : all) {
+                        if (!showInvalid[0] && !m.valid) continue;
+                        if (curCat[0] != 0 && m.cat != curCat[0]) continue;
+                        if (curMode[0] == 1 && m.depth > 0 && m.belong > 0 && m.belong != m.id) continue;
+                        if (curMode[0] == 2 && !arrivedSet.contains(m.id) && m.id != curSceneId[0]) continue;
+                        if (!q.isEmpty()) {
+                            String hay = (m.id + " " + m.name + " " + m.us + " " + m.desc + " " + m.belong).toLowerCase(Locale.US);
+                            if (!hay.contains(q)) continue;
+                        }
+                        visibleMaps.add(m);
+                    }
+                } else {
+                    // Build DFS hierarchical tree adhering strictly to game BelongScene
+                    Map<Integer, List<MapEntry>> childrenByParent = new HashMap<Integer, List<MapEntry>>();
+                    List<MapEntry> roots = new ArrayList<MapEntry>();
+                    for (MapEntry m : all) {
+                        if (!showInvalid[0] && !m.valid) continue;
+                        if (curCat[0] != 0 && m.cat != curCat[0]) continue;
+                        boolean hasVisibleParent = (m.belong > 0 && m.belong != m.id && mapById.containsKey(m.belong)
+                            && (curCat[0] == 0 || mapById.get(m.belong).cat == curCat[0])
+                            && (showInvalid[0] || mapById.get(m.belong).valid));
+                        if (!hasVisibleParent) {
+                            roots.add(m);
+                        } else {
+                            List<MapEntry> cl = childrenByParent.get(m.belong);
+                            if (cl == null) { cl = new ArrayList<MapEntry>(); childrenByParent.put(m.belong, cl); }
+                            cl.add(m);
+                        }
+                    }
+                    final List<MapEntry> stack = new ArrayList<MapEntry>(roots);
+                    Set<Integer> visited = new HashSet<Integer>();
+                    // DFS traversal without recursion stack overflow
+                    for (int i = 0; i < stack.size(); i++) {
+                        MapEntry node = stack.get(i);
+                        if (visited.contains(node.id)) continue;
+                        visited.add(node.id);
+                        visibleMaps.add(node);
+                        if (expandedIds.contains(node.id)) {
+                            List<MapEntry> ch = childrenByParent.get(node.id);
+                            if (ch != null && !ch.isEmpty()) {
+                                int insertPos = i + 1;
+                                for (int j = 0; j < ch.size(); j++) {
+                                    stack.add(insertPos + j, ch.get(j));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                MapEntry curM = mapById.get(curSceneId[0]);
+                String curName = curM != null ? curM.name : (curSceneId[0] > 0 ? ("#" + curSceneId[0]) : "未进存档");
+                tvMapStatus.setText("当前位置: " + curName + " (#" + curSceneId[0] + ") · 显示 " + visibleMaps.size() + " / 共 " + all.size() + " 张地图 (已去过 " + arrivedSet.size() + ")");
+                mapAdapter.notifyDataSetChanged();
+            }
+        };
+
+        for (int i = 0; i < CHAPTER_NAMES.length; i++) {
+            final int ci = i;
+            Button cbBtn = makePillBtn(CHAPTER_NAMES[i], i == 0 ? curTheme.btnBlue : curTheme.btnSlate, 24);
+            cbBtn.setTextSize(10f);
+            cbBtn.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    curCat[0] = ci;
+                    for (int k = 0; k < catBtns.size(); k++) {
+                        catBtns.get(k).setBackground(makeRoundBox(k == curCat[0] ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                    }
+                    rebuildMaps.run();
+                }
+            });
+            catBtns.add(cbBtn);
+            catRow.addView(cbBtn);
+        }
+
+        btnMapMode.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                curMode[0] = (curMode[0] + 1) % 3;
+                btnMapMode.setText(modeTitles[curMode[0]]);
+                rebuildMaps.run();
+            }
+        });
+        btnToggleValid.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showInvalid[0] = !showInvalid[0];
+                btnToggleValid.setText(showInvalid[0] ? "含未实装:开" : "含未实装:关");
+                btnToggleValid.setBackground(makeRoundBox(showInvalid[0] ? curTheme.btnGreen : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                rebuildMaps.run();
+            }
+        });
+        etMapSearchBox.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { rebuildMaps.run(); }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
+        mapDynReloadHook = rebuildMaps;
+        mapStateRefreshHook = new Runnable() {
+            @Override public void run() {
+                try {
+                    String raw = readFileText(new File(ctx.getFilesDir(), "dyn_map_state.json"));
+                    if (raw != null && raw.startsWith("{")) {
+                        JSONObject o = new JSONObject(raw);
+                        curSceneId[0] = o.optInt("curScene", 0);
+                        arrivedSet.clear();
+                        JSONArray aa = o.optJSONArray("arrived");
+                        if (aa != null) for (int i = 0; i < aa.length(); i++) arrivedSet.add(aa.optInt(i));
+                        ownSet.clear();
+                        JSONArray oa = o.optJSONArray("own");
+                        if (oa != null) for (int i = 0; i < oa.length(); i++) ownSet.add(oa.optInt(i));
+                    }
+                } catch (Throwable ignored) {}
+                rebuildMaps.run();
+            }
+        };
+
+        themeRefreshHooks.add(new Runnable() {
+            @Override public void run() {
+                tvMapStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+                tvMapStatus.setTextColor(curTheme.accent);
+                btnRefreshMap.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                styleEditBox(etMapSearchBox);
+                btnMapMode.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
+                btnToggleValid.setBackground(makeRoundBox(showInvalid[0] ? curTheme.btnGreen : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                for (int k = 0; k < catBtns.size(); k++) {
+                    catBtns.get(k).setBackground(makeRoundBox(k == curCat[0] ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                }
+                mapAdapter.notifyDataSetChanged();
+            }
+        });
+
+        loadMapsCatalog(ctx, false);
+        mapStateRefreshHook.run();
+        registerFeature("地图传送", "全地图与子地图传送", "按游戏原章节与Belong归属分级显示全地图，支持搜索与一键传送(兼容联机副本单人进入)", "地图 传送 跳转 副本 大地图 子地图 联机 teleport map", 9, wrap, null, null);
+        return wrap;
+    }
+
+    // =========================================================================
+    //  TAB 10: 任务管理 (原游戏章节+场景归属+前置树形结构 · 原生完成与重置推进)
+    // =========================================================================
+    private static class TaskListItem {
+        boolean isHeader;
+        int rootId;
+        String headerTitle;
+        int total;
+        int done;
+        TaskEntry task;
+    }
+
+    private FrameLayout buildTaskManagerPage() {
+        final FrameLayout wrap = new FrameLayout(ctx);
+        LinearLayout root = new LinearLayout(ctx);
+        root.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(root, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        final int[] curCat = new int[] { 0 };
+        final int[] curFilter = new int[] { 0 }; // 0=全部, 1=可做/已解锁, 2=已完成, 3=未解锁
+        final boolean[] withPrereqs = new boolean[] { true };
+        final Set<Integer> collapsedRoots = new HashSet<Integer>();
+        final Map<Integer, int[]> taskStates = new HashMap<Integer, int[]>(); // [unlocked, shown, finished]
+        final Map<Integer, String> taskLiveProg = new HashMap<Integer, String>();
+        final List<TaskListItem> listRows = new ArrayList<TaskListItem>();
+
+        // Top info bar
+        LinearLayout topBar = new LinearLayout(ctx);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        final TextView tvTaskStatus = new TextView(ctx);
+        tvTaskStatus.setText("任务管理: 读取场景事件与状态树中...");
+        tvTaskStatus.setTextColor(curTheme.accent);
+        tvTaskStatus.setTextSize(10.5f);
+        tvTaskStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+        tvTaskStatus.setPadding(dp(8), dp(4), dp(8), dp(4));
+        tvTaskStatus.setSingleLine(true);
+        tvTaskStatus.setEllipsize(TextUtils.TruncateAt.END);
+        tvTaskStatus.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        topBar.addView(tvTaskStatus);
+
+        final Button btnPrereq = makePillBtn("补全前置:开", curTheme.btnGreen, 26);
+        btnPrereq.setTextSize(9.5f);
+        topBar.addView(btnPrereq);
+
+        final Button btnRefTask = makePillBtn("刷新", curTheme.btnSlate, 26);
+        btnRefTask.setTextSize(9.5f);
+        topBar.addView(btnRefTask);
+
+        LinearLayout.LayoutParams tbLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tbLp.setMargins(0, 0, 0, dp(4));
+        root.addView(topBar, tbLp);
+
+        // Chapter filter bar
+        HorizontalScrollView hsv = new HorizontalScrollView(ctx);
+        hsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout catRow = new LinearLayout(ctx);
+        catRow.setOrientation(LinearLayout.HORIZONTAL);
+        final List<Button> catBtns = new ArrayList<Button>();
+        hsv.addView(catRow);
+        LinearLayout.LayoutParams hvLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hvLp.setMargins(0, 0, 0, dp(4));
+        root.addView(hsv, hvLp);
+
+        // Search + Status filter + Batch actions row
+        LinearLayout filterRow = new LinearLayout(ctx);
+        filterRow.setOrientation(LinearLayout.HORIZONTAL);
+        filterRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        etTaskSearchBox = makeDarkEdit("搜索任务名 / 归属 / 条件 / ID...", false);
+        etTaskSearchBox.setTextSize(11);
+        etTaskSearchBox.setLayoutParams(new LinearLayout.LayoutParams(0, dp(29), 1f));
+        filterRow.addView(etTaskSearchBox);
+
+        final String[] stFilterNames = new String[] { "状态:全部", "状态:已解锁", "状态:已完成", "状态:未解锁" };
+        final Button btnStFilter = makePillBtn(stFilterNames[0], curTheme.btnBlue, 27);
+        btnStFilter.setTextSize(9.5f);
+        filterRow.addView(btnStFilter);
+
+        final Button btnBatchDone = makePillBtn("本篇全完", curTheme.btnGreen, 27);
+        btnBatchDone.setTextSize(9.5f);
+        filterRow.addView(btnBatchDone);
+
+        final Button btnBatchReset = makePillBtn("本篇重置", curTheme.btnRed, 27);
+        btnBatchReset.setTextSize(9.5f);
+        filterRow.addView(btnBatchReset);
+
+        LinearLayout.LayoutParams frLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        frLp.setMargins(0, 0, 0, dp(4));
+        root.addView(filterRow, frLp);
+
+        final ListView lvTasks = new ListView(ctx);
+        lvTasks.setDividerHeight(dp(4));
+        lvTasks.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(lvTasks);
+
+        final Runnable[] rebuildTasksRef = new Runnable[1];
+
+        final BaseAdapter taskAdapter = new BaseAdapter() {
+            @Override public int getCount() { return listRows.size(); }
+            @Override public Object getItem(int pos) { return listRows.get(pos); }
+            @Override public long getItemId(int pos) {
+                TaskListItem it = listRows.get(pos);
+                return it.isHeader ? (100000L + it.rootId) : it.task.id;
+            }
+            @Override public View getView(int pos, View convertView, ViewGroup parent) {
+                final TaskListItem item = listRows.get(pos);
+                if (item.isHeader) {
+                    LinearLayout hdr = new LinearLayout(ctx);
+                    hdr.setOrientation(LinearLayout.HORIZONTAL);
+                    hdr.setGravity(Gravity.CENTER_VERTICAL);
+                    hdr.setBackground(makeRoundBox(curTheme.selBg, curTheme.panelEdge, dp(1), dp(7)));
+                    hdr.setPadding(dp(10), dp(6), dp(10), dp(6));
+
+                    boolean collapsed = collapsedRoots.contains(item.rootId);
+                    TextView tvH = new TextView(ctx);
+                    tvH.setText((collapsed ? "▸ " : "▾ ") + item.headerTitle + "   (" + item.done + "/" + item.total + " 已完成)");
+                    tvH.setTextColor(curTheme.accent);
+                    tvH.setTextSize(11.5f);
+                    tvH.setTypeface(null, Typeface.BOLD);
+                    tvH.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                    hdr.addView(tvH);
+
+                    hdr.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            if (collapsedRoots.contains(item.rootId)) collapsedRoots.remove(item.rootId);
+                            else collapsedRoots.add(item.rootId);
+                            if (rebuildTasksRef[0] != null) rebuildTasksRef[0].run();
+                        }
+                    });
+                    return hdr;
+                }
+
+                final TaskEntry t = item.task;
+                int[] st = taskStates.get(t.id);
+                boolean unlocked = st != null && st[0] != 0;
+                boolean shown = st != null && st[1] != 0;
+                final boolean finished = st != null && st[2] != 0;
+                String liveP = taskLiveProg.get(t.id);
+
+                LinearLayout card = new LinearLayout(ctx);
+                card.setOrientation(LinearLayout.HORIZONTAL);
+                card.setGravity(Gravity.CENTER_VERTICAL);
+                card.setBackground(makeRoundBox(
+                    finished ? curTheme.cardOnBg : curTheme.cardBg,
+                    finished ? curTheme.emerald : (unlocked ? curTheme.accent : curTheme.cardEdge),
+                    dp(1), dp(8)));
+                int indent = Math.min(3, Math.max(0, t.depth)) * 12;
+                card.setPadding(dp(9 + indent), dp(6), dp(8), dp(6));
+
+                LinearLayout info = new LinearLayout(ctx);
+                info.setOrientation(LinearLayout.VERTICAL);
+                info.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                String tier = t.depth == 0 ? "[大任务]" : (t.depth == 1 ? "[子任务]" : "[子子任务]");
+                String stTag = finished ? "  ✓已完成" : (shown ? "  ●追踪中" : (unlocked ? "  ●已解锁" : "  ○未解锁"));
+
+                TextView t1 = new TextView(ctx);
+                t1.setText(tier + " " + t.name + " (#" + t.id + ")" + stTag);
+                t1.setTextSize(t.depth == 0 ? 11.8f : 11.2f);
+                t1.setTypeface(null, t.depth == 0 ? Typeface.BOLD : Typeface.NORMAL);
+                t1.setTextColor(finished ? curTheme.emerald : (unlocked ? curTheme.textPri : curTheme.textSec));
+                info.addView(t1);
+
+                String chap = (t.cat >= 1 && t.cat < CHAPTER_NAMES.length) ? CHAPTER_NAMES[t.cat] : "主线";
+                StringBuilder belongSb = new StringBuilder();
+                belongSb.append(chap).append(" · 归属: ").append(t.sceneName.isEmpty() ? ("#" + t.scene) : t.sceneName);
+                if (!t.scenes.isEmpty() && t.scenes.indexOf('|') >= 0) belongSb.append(" [同步场景]");
+                if (liveP != null && !liveP.isEmpty()) belongSb.append(" · 进度: ").append(liveP);
+
+                TextView t2 = new TextView(ctx);
+                t2.setText(belongSb.toString());
+                t2.setTextSize(10f);
+                t2.setTextColor(curTheme.accent);
+                info.addView(t2);
+
+                StringBuilder condSb = new StringBuilder();
+                if (!t.desc.isEmpty()) condSb.append("说明: ").append(t.desc).append('\n');
+                if (!t.unlockTxt.isEmpty()) condSb.append("解锁条件: ").append(t.unlockTxt).append('\n');
+                if (!t.finishTxt.isEmpty()) condSb.append("完成条件: ").append(t.finishTxt);
+                else if (!t.showTxt.isEmpty()) condSb.append("触发条件: ").append(t.showTxt);
+                if (!t.reward.isEmpty()) condSb.append(condSb.length() > 0 ? "\n奖励: " : "奖励: ").append(t.reward);
+                String condFinal = condSb.toString().trim();
+                if (!condFinal.isEmpty()) {
+                    TextView t3 = new TextView(ctx);
+                    t3.setText(condFinal);
+                    t3.setTextSize(9.8f);
+                    t3.setTextColor(curTheme.textSec);
+                    info.addView(t3);
+                }
+                card.addView(info);
+
+                Button btnOp = makePillBtn(finished ? "设未完成" : "设已完成", finished ? curTheme.btnRed : curTheme.btnGreen, 28);
+                btnOp.setTextSize(9.8f);
+                btnOp.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        int subOp = finished ? 2 : 1;
+                        String arg = (!finished && withPrereqs[0]) ? "1" : "0";
+                        Menu.NativeQuery(21, subOp, t.id, 0L, arg);
+                        Toast.makeText(ctx, (finished ? "重置任务: " : "原生完成任务: ") + t.name, Toast.LENGTH_SHORT).show();
+                        mainH.postDelayed(new Runnable() {
+                            @Override public void run() {
+                                pollSnapshot();
+                                if (taskStateRefreshHook != null) taskStateRefreshHook.run();
+                            }
+                        }, 300);
+                    }
+                });
+                card.addView(btnOp);
+                return card;
+            }
+        };
+        lvTasks.setAdapter(taskAdapter);
+
+        final Runnable rebuildTasks = new Runnable() {
+            @Override public void run() {
+                List<TaskEntry> all = loadTasksCatalog(ctx, false);
+                String q = etTaskSearchBox.getText() != null ? etTaskSearchBox.getText().toString().trim().toLowerCase(Locale.US) : "";
+                listRows.clear();
+
+                // Group strictly by (cat, root) keeping original order
+                Map<Integer, List<TaskEntry>> grouped = new LinkedHashMap<Integer, List<TaskEntry>>();
+                Map<Integer, String> rootNames = new HashMap<Integer, String>();
+                int totalFiltered = 0;
+                int doneFiltered = 0;
+
+                for (TaskEntry t : all) {
+                    if (curCat[0] != 0 && t.cat != curCat[0]) continue;
+                    int[] st = taskStates.get(t.id);
+                    boolean unlocked = st != null && st[0] != 0;
+                    boolean finished = st != null && st[2] != 0;
+                    if (curFilter[0] == 1 && (finished || !unlocked)) continue;
+                    if (curFilter[0] == 2 && !finished) continue;
+                    if (curFilter[0] == 3 && (unlocked || finished)) continue;
+
+                    if (!q.isEmpty()) {
+                        String hay = (t.id + " " + t.name + " " + t.desc + " " + t.sceneName + " " + t.rootName + " " + t.unlockTxt + " " + t.finishTxt).toLowerCase(Locale.US);
+                        if (!hay.contains(q)) continue;
+                    }
+                    totalFiltered++;
+                    if (finished) doneFiltered++;
+
+                    int grpKey = t.root > 0 ? t.root : (t.scene > 0 ? t.scene : (t.cat * 10000));
+                    List<TaskEntry> gl = grouped.get(grpKey);
+                    if (gl == null) { gl = new ArrayList<TaskEntry>(); grouped.put(grpKey, gl); }
+                    gl.add(t);
+                    if (!rootNames.containsKey(grpKey)) {
+                        String chap = (t.cat >= 1 && t.cat < CHAPTER_NAMES.length) ? CHAPTER_NAMES[t.cat] : "主线";
+                        String rn = !t.rootName.isEmpty() ? t.rootName : (!t.sceneName.isEmpty() ? t.sceneName : chap);
+                        rootNames.put(grpKey, chap + " · " + rn + " (#" + grpKey + ")");
+                    }
+                }
+
+                for (Map.Entry<Integer, List<TaskEntry>> ent : grouped.entrySet()) {
+                    int gk = ent.getKey();
+                    List<TaskEntry> gl = ent.getValue();
+                    int gd = 0;
+                    for (TaskEntry te : gl) {
+                        int[] st = taskStates.get(te.id);
+                        if (st != null && st[2] != 0) gd++;
+                    }
+                    TaskListItem hdr = new TaskListItem();
+                    hdr.isHeader = true;
+                    hdr.rootId = gk;
+                    hdr.headerTitle = rootNames.get(gk);
+                    hdr.total = gl.size();
+                    hdr.done = gd;
+                    listRows.add(hdr);
+
+                    if (q.isEmpty() && collapsedRoots.contains(gk)) continue;
+                    for (TaskEntry te : gl) {
+                        TaskListItem row = new TaskListItem();
+                        row.isHeader = false;
+                        row.rootId = gk;
+                        row.task = te;
+                        listRows.add(row);
+                    }
+                }
+
+                tvTaskStatus.setText("任务总览: 匹配 " + totalFiltered + " 项 (" + doneFiltered + " 已完成) · 点击设完成自动联动原游戏触发器");
+                taskAdapter.notifyDataSetChanged();
+            }
+        };
+        rebuildTasksRef[0] = rebuildTasks;
+
+        for (int i = 0; i < CHAPTER_NAMES.length; i++) {
+            final int ci = i;
+            Button cbBtn = makePillBtn(CHAPTER_NAMES[i], i == 0 ? curTheme.btnBlue : curTheme.btnSlate, 24);
+            cbBtn.setTextSize(10f);
+            cbBtn.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    curCat[0] = ci;
+                    for (int k = 0; k < catBtns.size(); k++) {
+                        catBtns.get(k).setBackground(makeRoundBox(k == curCat[0] ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                    }
+                    rebuildTasks.run();
+                }
+            });
+            catBtns.add(cbBtn);
+            catRow.addView(cbBtn);
+        }
+
+        btnPrereq.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                withPrereqs[0] = !withPrereqs[0];
+                btnPrereq.setText(withPrereqs[0] ? "补全前置:开" : "补全前置:关");
+                btnPrereq.setBackground(makeRoundBox(withPrereqs[0] ? curTheme.btnGreen : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+            }
+        });
+        btnRefTask.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(13, 0, 0, 0L, "");
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        loadTasksCatalog(ctx, true);
+                        if (taskStateRefreshHook != null) taskStateRefreshHook.run();
+                    }
+                }, 250);
+            }
+        });
+        btnStFilter.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                curFilter[0] = (curFilter[0] + 1) % 4;
+                btnStFilter.setText(stFilterNames[curFilter[0]]);
+                rebuildTasks.run();
+            }
+        });
+        btnBatchDone.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(21, 5, curCat[0], (long) curCat[0], withPrereqs[0] ? "1" : "0");
+                Toast.makeText(ctx, "正在批量原生完成 [" + CHAPTER_NAMES[curCat[0]] + "] 任务...", Toast.LENGTH_SHORT).show();
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        pollSnapshot();
+                        if (taskStateRefreshHook != null) taskStateRefreshHook.run();
+                    }
+                }, 400);
+            }
+        });
+        btnBatchReset.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(21, 6, curCat[0], (long) curCat[0], "0");
+                Toast.makeText(ctx, "正在批量重置 [" + CHAPTER_NAMES[curCat[0]] + "] 任务...", Toast.LENGTH_SHORT).show();
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        pollSnapshot();
+                        if (taskStateRefreshHook != null) taskStateRefreshHook.run();
+                    }
+                }, 400);
+            }
+        });
+        etTaskSearchBox.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { rebuildTasks.run(); }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
+        taskDynReloadHook = rebuildTasks;
+        taskStateRefreshHook = new Runnable() {
+            @Override public void run() {
+                try {
+                    String raw = readFileText(new File(ctx.getFilesDir(), "dyn_task_state.json"));
+                    if (raw != null && raw.startsWith("{")) {
+                        JSONObject o = new JSONObject(raw);
+                        JSONArray evs = o.optJSONArray("events");
+                        taskStates.clear();
+                        taskLiveProg.clear();
+                        if (evs != null) {
+                            for (int i = 0; i < evs.length(); i++) {
+                                JSONArray r = evs.optJSONArray(i);
+                                if (r == null || r.length() < 4) continue;
+                                int eid = r.optInt(0);
+                                taskStates.put(eid, new int[] { r.optInt(1), r.optInt(2), r.optInt(3) });
+                                if (r.length() >= 5) {
+                                    String p = r.optString(4, "").trim();
+                                    if (!p.isEmpty()) taskLiveProg.put(eid, p);
+                                }
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+                rebuildTasks.run();
+            }
+        };
+
+        themeRefreshHooks.add(new Runnable() {
+            @Override public void run() {
+                tvTaskStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+                tvTaskStatus.setTextColor(curTheme.accent);
+                btnPrereq.setBackground(makeRoundBox(withPrereqs[0] ? curTheme.btnGreen : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                btnRefTask.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                styleEditBox(etTaskSearchBox);
+                btnStFilter.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
+                btnBatchDone.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+                btnBatchReset.setBackground(makeRoundBox(curTheme.btnRed, 0x33FFFFFF, 1, dp(7)));
+                for (int k = 0; k < catBtns.size(); k++) {
+                    catBtns.get(k).setBackground(makeRoundBox(k == curCat[0] ? curTheme.btnBlue : curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                }
+                taskAdapter.notifyDataSetChanged();
+            }
+        });
+
+        loadTasksCatalog(ctx, false);
+        taskStateRefreshHook.run();
+        registerFeature("任务管理", "任务列表与完成状态管理", "列出全剧情/支线/子任务及条件，原生函数设置已完成/未完成", "任务 剧情 支线 触发 完成 重置 条件 quest task", 10, wrap, null, null);
+        return wrap;
+    }
+
+    // =========================================================================
+    //  TAB 11: 娱乐功能 (留声机本地音乐 + 电子斗蛐蛐 + 全图敌对随机生成)
+    // =========================================================================
+    private FrameLayout buildEntertainmentPage() {
+        FrameLayout wrap = new FrameLayout(ctx);
+        svEnt = new ScrollView(ctx);
+        svEnt.setVerticalScrollBarEnabled(true);
+        LinearLayout col = new LinearLayout(ctx);
+        col.setOrientation(LinearLayout.VERTICAL);
+        svEnt.addView(col);
+        wrap.addView(svEnt, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        tvEntStatus = new TextView(ctx);
+        tvEntStatus.setText("娱乐功能: 留声机播放本地MP3、电子斗蛐蛐死锁对决、全图敌对均等随机生成");
+        tvEntStatus.setTextColor(curTheme.accent);
+        tvEntStatus.setTextSize(11f);
+        tvEntStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+        tvEntStatus.setPadding(dp(10), dp(5), dp(10), dp(5));
+        tvEntStatus.setSingleLine(true);
+        tvEntStatus.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        stLp.setMargins(0, 0, 0, dp(6));
+        col.addView(tvEntStatus, stLp);
+
+        // 1. Phonograph local MP3 (moved cleanly from 保护辅助)
+        final Switch[] swHolderPhono = new Switch[1];
+        LinearLayout rPhono = makeSwitchRow("留声机播放本地音乐", "家中留声机扫描播放 /sdcard/Music 或 /sdcard/AresMod/Music 的MP3", flagPhono, swHolderPhono, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagPhono = isOn;
+                Preferences.changeFeatureBool("留声机播放本地音乐", 83, flagPhono);
+                Menu.NativeQuery(10, 10, flagPhono ? 1 : 0, 0L, "");
+                Toast.makeText(ctx, flagPhono ? "已开启留声机播放本地MP3 (/sdcard/Music 或 /sdcard/AresMod/Music)" : "已恢复原版留声机音乐", Toast.LENGTH_SHORT).show();
+            }
+        });
+        swPhono = swHolderPhono[0];
+        col.addView(rPhono);
+        registerFeature("娱乐功能", "留声机播放本地音乐", "播放本地目录MP3歌曲", "留声机 音乐 mp3 播放 娱乐", 11, rPhono, svEnt, null);
+
+        // 2. Cyber Cricket Duel Card (电子斗蛐蛐)
+        final int[] duelIdA = new int[] { 1510 };
+        final int[] duelIdB = new int[] { 1520 };
+        final String[] duelNameA = new String[] { "蝎子 (#1510)" };
+        final String[] duelNameB = new String[] { "螳螂 (#1520)" };
+
+        final LinearLayout cardCricket = new LinearLayout(ctx);
+        cardCricket.setOrientation(LinearLayout.VERTICAL);
+        cardCricket.setPadding(dp(12), dp(9), dp(12), dp(9));
+        cardCricket.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(10)));
+        LinearLayout.LayoutParams ckLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ckLp.setMargins(0, 0, 0, dp(6));
+
+        final TextView tvCkT = new TextView(ctx);
+        tvCkT.setText("电子斗蛐蛐 (双实体互殴死锁仇恨)");
+        tvCkT.setTextColor(curTheme.textPri);
+        tvCkT.setTextSize(12.5f);
+        tvCkT.setTypeface(null, Typeface.BOLD);
+        cardCricket.addView(tvCkT);
+
+        final TextView tvCkSub = new TextView(ctx);
+        tvCkSub.setText("自由搜索并选择任意两个实体（无分类限制）；生成后强行互设敌对且视玩家为友军，永久互锁仇恨，玩家靠近或攻击也不会转移目标。");
+        tvCkSub.setTextColor(curTheme.textSec);
+        tvCkSub.setTextSize(10.2f);
+        tvCkSub.setPadding(0, dp(2), 0, dp(6));
+        cardCricket.addView(tvCkSub);
+
+        LinearLayout pickRow = new LinearLayout(ctx);
+        pickRow.setOrientation(LinearLayout.HORIZONTAL);
+        pickRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        final Button btnPickA = makePillBtn("蓝方 #1: " + duelNameA[0], curTheme.btnBlue, 30);
+        btnPickA.setTextSize(10.5f);
+        LinearLayout.LayoutParams paLp = new LinearLayout.LayoutParams(0, dp(32), 1f);
+        paLp.setMargins(0, 0, dp(6), 0);
+        pickRow.addView(btnPickA, paLp);
+
+        final Button btnPickB = makePillBtn("红方 #2: " + duelNameB[0], curTheme.btnRed, 30);
+        btnPickB.setTextSize(10.5f);
+        LinearLayout.LayoutParams pbLp = new LinearLayout.LayoutParams(0, dp(32), 1f);
+        pickRow.addView(btnPickB, pbLp);
+        cardCricket.addView(pickRow);
+
+        btnPickA.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showUnitPickerModal("选择 斗蛐蛐·蓝方实体 #1", new UnitPickCallback() {
+                    @Override public void onPicked(SpawnUnitInfo u) {
+                        duelIdA[0] = u.id;
+                        duelNameA[0] = u.name + " (#" + u.id + ")";
+                        btnPickA.setText("蓝方 #1: " + duelNameA[0]);
+                    }
+                });
+            }
+        });
+        btnPickB.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showUnitPickerModal("选择 斗蛐蛐·红方实体 #2", new UnitPickCallback() {
+                    @Override public void onPicked(SpawnUnitInfo u) {
+                        duelIdB[0] = u.id;
+                        duelNameB[0] = u.name + " (#" + u.id + ")";
+                        btnPickB.setText("红方 #2: " + duelNameB[0]);
+                    }
+                });
+            }
+        });
+
+        LinearLayout duelBtnRow = new LinearLayout(ctx);
+        duelBtnRow.setOrientation(LinearLayout.HORIZONTAL);
+        duelBtnRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams dbLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dbLp.setMargins(0, dp(6), 0, dp(4));
+
+        final Button btnStartDuel = makePillBtn("开战! 在附近生成斗蛐蛐", curTheme.btnGreen, 30);
+        btnStartDuel.setTextSize(10.8f);
+        btnStartDuel.setLayoutParams(new LinearLayout.LayoutParams(0, dp(31), 1f));
+        btnStartDuel.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(24, duelIdA[0], duelIdB[0], 1L, "");
+                Toast.makeText(ctx, "斗蛐蛐开战: " + duelNameA[0] + " VS " + duelNameB[0], Toast.LENGTH_SHORT).show();
+            }
+        });
+        duelBtnRow.addView(btnStartDuel);
+
+        final Button btnClearDuel = makePillBtn("清除擂台", curTheme.btnSlate, 30);
+        btnClearDuel.setTextSize(10.2f);
+        btnClearDuel.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(24, 0, 0, 2L, "");
+                Toast.makeText(ctx, "已清除斗蛐蛐擂台", Toast.LENGTH_SHORT).show();
+            }
+        });
+        duelBtnRow.addView(btnClearDuel);
+        cardCricket.addView(duelBtnRow, dbLp);
+
+        tvCricketState = new TextView(ctx);
+        tvCricketState.setText("当前战况: 请选择两位实体后点击开战");
+        tvCricketState.setTextColor(curTheme.accent);
+        tvCricketState.setTextSize(10.2f);
+        cardCricket.addView(tvCricketState);
+
+        col.addView(cardCricket, ckLp);
+        registerFeature("娱乐功能", "电子斗蛐蛐 (互殴死锁仇恨)", "全实体自由搜索选择两人互相对决，忽略玩家攻击", "斗蛐蛐 电子斗蛐蛐 互殴 对战 仇恨 锁定 duel", 11, cardCricket, svEnt, null);
+
+        // 3. Random Enemy Scrambler Card (随机生成)
+        cardRandomSpawn = new LinearLayout(ctx);
+        cardRandomSpawn.setOrientation(LinearLayout.VERTICAL);
+        cardRandomSpawn.setPadding(dp(12), dp(9), dp(12), dp(9));
+        cardRandomSpawn.setBackground(makeRoundBox(flagRandomSpawn ? curTheme.cardOnBg : curTheme.cardBg, flagRandomSpawn ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+        LinearLayout.LayoutParams rsLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rsLp.setMargins(0, 0, 0, dp(6));
+
+        LinearLayout rsTop = new LinearLayout(ctx);
+        rsTop.setOrientation(LinearLayout.HORIZONTAL);
+        rsTop.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout rsCol = new LinearLayout(ctx);
+        rsCol.setOrientation(LinearLayout.VERTICAL);
+        rsCol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final TextView tvRsT = new TextView(ctx);
+        tvRsT.setText("随机生成 (全图敌对生物均等概率打乱)");
+        tvRsT.setTextColor(curTheme.textPri);
+        tvRsT.setTextSize(12.5f);
+        tvRsT.setTypeface(null, Typeface.BOLD);
+        rsCol.addView(tvRsT);
+
+        final TextView tvRsSub = new TextView(ctx);
+        tvRsSub.setText("开启后，所有地图的敌对生物刷新均从全游戏跨地图敌对生物池中以完全均等概率随机生成（保留波次触发与友军NPC）。");
+        tvRsSub.setTextColor(curTheme.textSec);
+        tvRsSub.setTextSize(10.2f);
+        tvRsSub.setPadding(0, dp(2), dp(6), 0);
+        rsCol.addView(tvRsSub);
+        rsTop.addView(rsCol);
+
+        swRandomSpawn = new Switch(ctx);
+        swRandomSpawn.setChecked(flagRandomSpawn);
+        swRandomSpawn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                if (suppressToggleCallbacks) return;
+                flagRandomSpawn = isOn;
+                Preferences.changeFeatureBool("随机生成敌对生物", 129, flagRandomSpawn);
+                Menu.NativeQuery(10, 21, flagRandomSpawn ? 1 : 0, 0L, "");
+                syncToggleCardStyles();
+                Toast.makeText(ctx, flagRandomSpawn ? "已开启全图敌对生物均等随机生成!" : "已关闭随机生成 (新加载地图恢复原样)", Toast.LENGTH_SHORT).show();
+            }
+        });
+        rsTop.addView(swRandomSpawn);
+        cardRandomSpawn.addView(rsTop);
+
+        tvRandomSpawnState = new TextView(ctx);
+        tvRandomSpawnState.setText(flagRandomSpawn ? "● 全图敌对生物随机打乱生效中" : "○ 未开启 (保持原图刷怪)");
+        tvRandomSpawnState.setTextColor(flagRandomSpawn ? curTheme.emerald : curTheme.textSec);
+        tvRandomSpawnState.setTextSize(10.2f);
+        tvRandomSpawnState.setPadding(0, dp(4), 0, 0);
+        cardRandomSpawn.addView(tvRandomSpawnState);
+
+        col.addView(cardRandomSpawn, rsLp);
+        registerFeature("娱乐功能", "随机生成 (全图敌对生物均等打乱)", "全地图敌对怪物按均等概率跨地图随机替换生成", "随机生成 乱斗 刷怪 随机 打乱 怪物 random", 11, cardRandomSpawn, svEnt, null);
+
+        themeRefreshHooks.add(new Runnable() {
+            @Override public void run() {
+                tvEntStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+                tvEntStatus.setTextColor(curTheme.accent);
+                cardCricket.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(10)));
+                tvCkT.setTextColor(curTheme.textPri);
+                tvCkSub.setTextColor(curTheme.textSec);
+                tvCricketState.setTextColor(curTheme.accent);
+                btnPickA.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
+                btnPickB.setBackground(makeRoundBox(curTheme.btnRed, 0x33FFFFFF, 1, dp(7)));
+                btnStartDuel.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+                btnClearDuel.setBackground(makeRoundBox(curTheme.btnSlate, 0x33FFFFFF, 1, dp(7)));
+                tvRsT.setTextColor(curTheme.textPri);
+                tvRsSub.setTextColor(curTheme.textSec);
+                if (cardRandomSpawn != null) {
+                    cardRandomSpawn.setBackground(makeRoundBox(flagRandomSpawn ? curTheme.cardOnBg : curTheme.cardBg, flagRandomSpawn ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
                 }
             }
         });
 
         return wrap;
+    }
+
+    // =========================================================================
+    //  TAB 12: 保护辅助 (账号反作弊 + 云存档拦截 + 固定7891登录 + 解锁与便利功能)
+    // =========================================================================
+    private FrameLayout buildAssistSecurityPage() {
+        FrameLayout wrap = new FrameLayout(ctx);
+        svAssist = new ScrollView(ctx);
+        svAssist.setVerticalScrollBarEnabled(true);
+        LinearLayout col = new LinearLayout(ctx);
+        col.setOrientation(LinearLayout.VERTICAL);
+        svAssist.addView(col);
+        wrap.addView(svAssist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        tvOtherStatus = new TextView(ctx);
+        tvOtherStatus.setText("保护辅助: 账号防封、云存档拦截、7891登录兼容、地图探索与存档管理");
+        tvOtherStatus.setTextColor(curTheme.accent);
+        tvOtherStatus.setTextSize(11);
+        tvOtherStatus.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+        tvOtherStatus.setPadding(dp(10), dp(5), dp(10), dp(5));
+        tvOtherStatus.setSingleLine(true);
+        tvOtherStatus.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        stLp.setMargins(0, 0, 0, dp(6));
+        col.addView(tvOtherStatus, stLp);
+
+        final List<TextView> secHdrs = new ArrayList<TextView>();
+        final TextView hdrSec = new TextView(ctx);
+        hdrSec.setText("— 账号安全与固定 7891 登录 —");
+        hdrSec.setTextColor(curTheme.accent);
+        hdrSec.setTextSize(11.5f);
+        hdrSec.setTypeface(null, Typeface.BOLD);
+        hdrSec.setPadding(dp(2), dp(2), 0, dp(4));
+        col.addView(hdrSec);
+        secHdrs.add(hdrSec);
+
+        // 1. Anti-cheat switch
+        final Switch[] swHolderAC = new Switch[1];
+        LinearLayout rAC = makeSwitchRow("全链路反作弊保护", "C#协议+底层反作弊拦截，防止封号、校验与异常上报 (推荐常开)", flagAC, swHolderAC, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagAC = isOn;
+                XposedEntry.antiCheatEnabled = flagAC;
+                Preferences.changeFeatureBool("全代码拦截作弊检验/上报/封号", 60, flagAC);
+                Menu.NativeQuery(10, 0, flagAC ? 1 : 0, 0L, "");
+            }
+        });
+        swAC = swHolderAC[0];
+        col.addView(rAC);
+        registerFeature("保护辅助", "全链路反作弊保护", "拦截作弊检验、上报与封号检测", "反作弊 封号 防封 保护 anticheat", 12, rAC, svAssist, null);
+
+        // 2. Block cloud save upload
+        final Switch[] swHolderBlockCloud = new Switch[1];
+        LinearLayout rBlockCloud = makeSwitchRow("拦截云存档上传", "反作弊核心项：100%拦截游园镇获取重要物品自动云存及所有手动云存 (推荐常开)", flagBlockCloud, swHolderBlockCloud, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagBlockCloud = isOn;
+                Preferences.changeFeatureBool("100%拦截云存档上传", 84, flagBlockCloud);
+                Menu.NativeQuery(10, 11, flagBlockCloud ? 1 : 0, 0L, "");
+            }
+        });
+        swBlockCloud = swHolderBlockCloud[0];
+        col.addView(rBlockCloud);
+        registerFeature("保护辅助", "拦截云存档上传", "阻止所有自动与手动云存档上传至官方服务器", "云存档 上传 拦截 游园镇", 12, rBlockCloud, svAssist, null);
+
+        // 3. Fixed UserID = 7891 Login Card (NO custom input, full local save compatibility)
+        cardLogin7891 = new LinearLayout(ctx);
+        cardLogin7891.setOrientation(LinearLayout.VERTICAL);
+        cardLogin7891.setPadding(dp(12), dp(9), dp(12), dp(9));
+        cardLogin7891.setBackground(makeRoundBox(flagLogin7891 ? curTheme.cardOnBg : curTheme.cardBg, flagLogin7891 ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+        LinearLayout.LayoutParams l78Lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        l78Lp.setMargins(0, 0, 0, dp(6));
+
+        LinearLayout l78Top = new LinearLayout(ctx);
+        l78Top.setOrientation(LinearLayout.HORIZONTAL);
+        l78Top.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout l78Col = new LinearLayout(ctx);
+        l78Col.setOrientation(LinearLayout.VERTICAL);
+        l78Col.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final TextView tv78T = new TextView(ctx);
+        tv78T.setText("固定 UserID=7891 登录 (免账号 / 全本地存档兼容)");
+        tv78T.setTextColor(curTheme.textPri);
+        tv78T.setTextSize(12f);
+        tv78T.setTypeface(null, Typeface.BOLD);
+        l78Col.addView(tv78T);
+
+        final TextView tv78Sub = new TextView(ctx);
+        tv78Sub.setText("拦截登录与联机校验，自动解密重写 DBData.UserID 兼容任意本地存档读取");
+        tv78Sub.setTextColor(curTheme.textSec);
+        tv78Sub.setTextSize(10.2f);
+        tv78Sub.setPadding(0, dp(2), dp(6), 0);
+        l78Col.addView(tv78Sub);
+        l78Top.addView(l78Col);
+
+        swLogin7891 = new Switch(ctx);
+        swLogin7891.setChecked(flagLogin7891);
+        swLogin7891.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                if (suppressToggleCallbacks) return;
+                flagLogin7891 = isOn;
+                Preferences.changeFeatureBool("固定7891登录", 128, flagLogin7891);
+                Menu.NativeQuery(10, 20, flagLogin7891 ? 1 : 0, 0L, "");
+                cardLogin7891.setBackground(makeRoundBox(flagLogin7891 ? curTheme.cardOnBg : curTheme.cardBg, flagLogin7891 ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        pollSnapshot();
+                        if (loginStateRefreshHook != null) loginStateRefreshHook.run();
+                    }
+                }, 350);
+                Toast.makeText(ctx, flagLogin7891 ? "已开启固定 UserID=7891 登录与跨账号本地存档兼容" : "已关闭固定7891登录 (恢复原账号并保持本地存档兼容)", Toast.LENGTH_SHORT).show();
+            }
+        });
+        l78Top.addView(swLogin7891);
+        cardLogin7891.addView(l78Top);
+
+        LinearLayout l78Foot = new LinearLayout(ctx);
+        l78Foot.setOrientation(LinearLayout.HORIZONTAL);
+        l78Foot.setGravity(Gravity.CENTER_VERTICAL);
+        l78Foot.setPadding(0, dp(5), 0, 0);
+
+        tvLogin7891State = new TextView(ctx);
+        tvLogin7891State.setText("状态: 等待登录模块同步...");
+        tvLogin7891State.setTextColor(curTheme.accent);
+        tvLogin7891State.setTextSize(10f);
+        tvLogin7891State.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        l78Foot.addView(tvLogin7891State);
+
+        final Button btnSyncSave7891 = makePillBtn("兼容导入最新本地存档", curTheme.btnBlue, 25);
+        btnSyncSave7891.setTextSize(9.8f);
+        btnSyncSave7891.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(22, 1, 1, 0L, "");
+                mainH.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        pollSnapshot();
+                        if (loginStateRefreshHook != null) loginStateRefreshHook.run();
+                    }
+                }, 350);
+                Toast.makeText(ctx, "已执行全本地存档 UID 兼容迁移与校验", Toast.LENGTH_SHORT).show();
+            }
+        });
+        l78Foot.addView(btnSyncSave7891);
+        cardLogin7891.addView(l78Foot);
+        col.addView(cardLogin7891, l78Lp);
+        registerFeature("保护辅助", "固定 UserID=7891 登录", "固定以7891账号登录并跨UID兼容读取任何本地存档", "7891 userid 登录 账号 存档 兼容 login", 12, cardLogin7891, svAssist, null);
+
+        loginStateRefreshHook = new Runnable() {
+            @Override public void run() {
+                try {
+                    String raw = readFileText(new File(ctx.getFilesDir(), "dyn_login_state.json"));
+                    if (raw != null && raw.startsWith("{") && tvLogin7891State != null) {
+                        JSONObject o = new JSONObject(raw);
+                        long uid = o.optLong("uid", 0L);
+                        long ouid = o.optLong("origUid", 0L);
+                        String db = o.optString("activeDb", "");
+                        int ex = o.optInt("dbExists", 0);
+                        tvLogin7891State.setText("当前UID:" + uid + (ouid > 0 && ouid != uid ? (" (原:" + ouid + ")") : "") + " · 存档:" + db + (ex != 0 ? " ✓" : " (待生成)"));
+                    }
+                } catch (Throwable ignored) {}
+            }
+        };
+        loginStateRefreshHook.run();
+
+        final TextView hdrWorld = new TextView(ctx);
+        hdrWorld.setText("— 解锁内容与地图探索便利 —");
+        hdrWorld.setTextColor(curTheme.accent);
+        hdrWorld.setTextSize(11.5f);
+        hdrWorld.setTypeface(null, Typeface.BOLD);
+        hdrWorld.setPadding(dp(2), dp(4), 0, dp(4));
+        col.addView(hdrWorld);
+        secHdrs.add(hdrWorld);
+
+        // 4. Paid unlock
+        final Switch[] swHolderPaid = new Switch[1];
+        LinearLayout rPaid = makeSwitchRow("一键解锁全部付费道具", "猎人小屋/哈士奇/猪王/商城与DLC扩展内容", flagPaid, swHolderPaid, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagPaid = isOn;
+                Preferences.changeFeatureBool("一键解锁全部付费道具", 70, flagPaid);
+                Menu.NativeQuery(10, 3, flagPaid ? 1 : 0, 0L, "");
+                Toast.makeText(ctx, flagPaid ? "已本地开启全付费道具解锁" : "已恢复原始付费状态", Toast.LENGTH_SHORT).show();
+            }
+        });
+        swPaid = swHolderPaid[0];
+        col.addView(rPaid);
+        registerFeature("保护辅助", "一键解锁全部付费道具", "解锁DLC、猎人小屋、哈士奇、猪王及内购物品", "付费 内购 免费 dlc 猎人 哈士奇 猪王", 12, rPaid, svAssist, null);
+
+        // 5. Blueprints button row
+        LinearLayout rBp = new LinearLayout(ctx);
+        rBp.setOrientation(LinearLayout.HORIZONTAL);
+        rBp.setGravity(Gravity.CENTER_VERTICAL);
+        rBp.setPadding(dp(12), dp(8), dp(12), dp(8));
+        rBp.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
+        LinearLayout.LayoutParams bpLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bpLp.setMargins(0, 0, 0, dp(5));
+        rBp.setLayoutParams(bpLp);
+
+        LinearLayout bpCol = new LinearLayout(ctx);
+        bpCol.setOrientation(LinearLayout.VERTICAL);
+        bpCol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView tvBpT = new TextView(ctx);
+        tvBpT.setText("一键解锁全部蓝图");
+        tvBpT.setTextSize(12f);
+        tvBpT.setTextColor(curTheme.textPri);
+        tvBpT.setTypeface(null, Typeface.BOLD);
+        bpCol.addView(tvBpT);
+        TextView tvBpS = new TextView(ctx);
+        tvBpS.setText("解锁全部 65+ 工作台/武器/防具/建筑蓝图");
+        tvBpS.setTextSize(10.5f);
+        tvBpS.setTextColor(curTheme.textSec);
+        tvBpS.setPadding(0, dp(2), 0, 0);
+        bpCol.addView(tvBpS);
+        rBp.addView(bpCol);
+
+        final Button btnBpGo = makePillBtn("立即解锁全部蓝图", curTheme.btnGreen, 26);
+        btnBpGo.setTextSize(10);
+        btnBpGo.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Menu.NativeQuery(6, 0, 0, 0L, "");
+                mainH.postDelayed(new Runnable() { @Override public void run() { pollSnapshot(); } }, 220);
+                Toast.makeText(ctx, "已静默解锁全部蓝图", Toast.LENGTH_SHORT).show();
+            }
+        });
+        rBp.addView(btnBpGo);
+        otherFeatureRows.add(rBp);
+        otherFeatureTitles.add(tvBpT);
+        otherFeatureSubs.add(tvBpS);
+        col.addView(rBp);
+        registerFeature("保护辅助", "一键解锁全部蓝图", "立刻解锁所有工作台/装备/建筑蓝图", "蓝图 配方 制作 解锁 blueprint", 12, rBp, svAssist, null);
+
+        // 6. Noclip
+        final Switch[] swHolderNoclip = new Switch[1];
+        LinearLayout rNoclip = makeSwitchRow("穿墙模式", "关闭主角实体碰撞箱，自由穿行任何障碍与地图", flagNoclip, swHolderNoclip, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagNoclip = isOn;
+                Preferences.changeFeatureBool("穿墙模式", 73, flagNoclip);
+                Menu.NativeQuery(10, 6, flagNoclip ? 1 : 0, 0L, "");
+            }
+        });
+        swNoclip = swHolderNoclip[0];
+        col.addView(rNoclip);
+        registerFeature("保护辅助", "穿墙模式", "关闭碰撞体自由穿过墙壁与障碍物", "穿墙 碰撞 飞天 noclip", 12, rNoclip, svAssist, null);
+
+        // 7. Instant interact
+        final Switch[] swHolderInst = new Switch[1];
+        LinearLayout rInst = makeSwitchRow("关闭交互时间", "砍树/采矿/砍家具/采集/拾取/开箱/回家0秒瞬时交互无需读条", flagInstant, swHolderInst, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagInstant = isOn;
+                Preferences.changeFeatureBool("关闭交互时间", 71, flagInstant);
+                Menu.NativeQuery(10, 4, flagInstant ? 1 : 0, 0L, "");
+            }
+        });
+        swInstant = swHolderInst[0];
+        col.addView(rInst);
+        registerFeature("保护辅助", "关闭交互时间", "采集/开箱/砍树/回家 0 秒瞬时交互", "交互 秒开 读条 采集 砍树 挖矿", 12, rInst, svAssist, null);
+
+        // 8. Sewer highlight
+        final Switch[] swHolderSewer = new Switch[1];
+        LinearLayout rSewer = makeSwitchRow("下水道/洞穴全图高亮", "下水道、洞穴等黑暗地图始终全图照明高亮", flagSewer, swHolderSewer, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagSewer = isOn;
+                Preferences.changeFeatureBool("下水道高亮", 81, flagSewer);
+                Menu.NativeQuery(10, 8, flagSewer ? 1 : 0, 0L, "");
+                Toast.makeText(ctx, flagSewer ? "已开启下水道/洞穴全图高亮" : "已关闭下水道高亮", Toast.LENGTH_SHORT).show();
+            }
+        });
+        swSewer = swHolderSewer[0];
+        col.addView(rSewer);
+        registerFeature("保护辅助", "下水道/洞穴全图高亮", "黑暗场景全图常亮视野无死角", "下水道 高亮 夜视 照明 洞穴", 12, rSewer, svAssist, null);
+
+        // 9. Always event
+        final Switch[] swHolderEvent = new Switch[1];
+        LinearLayout rEvent = makeSwitchRow("限时活动全开放", "周末/节日/限时开放的活动玩法与商人常驻开放", flagEvent, swHolderEvent, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagEvent = isOn;
+                Preferences.changeFeatureBool("限时活动开放", 82, flagEvent);
+                Menu.NativeQuery(10, 9, flagEvent ? 1 : 0, 0L, "");
+                Toast.makeText(ctx, flagEvent ? "已开启限时活动全开放" : "已恢复原版限时活动开放规则", Toast.LENGTH_SHORT).show();
+            }
+        });
+        swEvent = swHolderEvent[0];
+        col.addView(rEvent);
+        registerFeature("保护辅助", "限时活动全开放", "周末及限时节日玩法与商人常驻", "活动 周末 节日 开放", 12, rEvent, svAssist, null);
+
+        final TextView hdrMisc = new TextView(ctx);
+        hdrMisc.setText("— 仓库存储与配置持久化 —");
+        hdrMisc.setTextColor(curTheme.accent);
+        hdrMisc.setTextSize(11.5f);
+        hdrMisc.setTypeface(null, Typeface.BOLD);
+        hdrMisc.setPadding(dp(2), dp(4), 0, dp(4));
+        col.addView(hdrMisc);
+        secHdrs.add(hdrMisc);
+
+        // 10. Infinite stack
+        final Switch[] swHolderInfStk = new Switch[1];
+        LinearLayout rInfStk = makeSwitchRow("仓库无限堆叠", "仅仓库生效，且仅限相同NBT/耐久度物品无限堆叠", flagInfStack, swHolderInfStk, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagInfStack = isOn;
+                Preferences.changeFeatureBool("无限堆叠(仓库)", 72, flagInfStack);
+                Menu.NativeQuery(10, 5, flagInfStack ? 1 : 0, 0L, "");
+            }
+        });
+        swInfStack = swHolderInfStk[0];
+        col.addView(rInfStk);
+        registerFeature("保护辅助", "仓库无限堆叠", "仓库物品同NBT/耐久突破上限无限堆叠", "仓库 堆叠 无限 stack", 12, rInfStk, svAssist, null);
+
+        // 11. Saved Props row
+        final Switch[] swHolderProps = new Switch[1];
+        LinearLayout rProps = makeSwitchRow("属性配置持久化", "进存档自动加载已保存的数值与锁定状态", flagAutoProps, swHolderProps, new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton b, boolean isOn) {
+                flagAutoProps = isOn;
+                modPrefs.edit().putBoolean("auto_restore_props", flagAutoProps).apply();
+                Toast.makeText(ctx, flagAutoProps ? "下次进游戏将自动加载属性配置" : "已暂停下次进游戏自动加载", Toast.LENGTH_SHORT).show();
+            }
+        });
+        swAutoProps = swHolderProps[0];
+
+        final Button btnSaveProps = makePillBtn("保存配置", curTheme.btnGreen, 26);
+        btnSaveProps.setTextSize(10);
+        btnSaveProps.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                saveCurrentPropsConfig();
+                Toast.makeText(ctx, "已保存当前 " + savedPropVals.size() + " 项属性配置", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        final Button btnClearProps = makePillBtn("删除已存配置", curTheme.btnRed, 26);
+        btnClearProps.setTextSize(10);
+        btnClearProps.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                clearSavedPropsConfig();
+                Toast.makeText(ctx, "已删除当前保存的属性配置", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        rProps.addView(btnSaveProps, rProps.getChildCount() - 1);
+        rProps.addView(btnClearProps, rProps.getChildCount() - 1);
+        col.addView(rProps);
+        registerFeature("保护辅助", "属性配置持久化", "进存档自动恢复已保存属性与锁定配置", "属性 保存 持久化 自动恢复", 12, rProps, svAssist, null);
+
+        themeRefreshHooks.add(new Runnable() {
+            @Override public void run() {
+                for (View r : otherFeatureRows) r.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(8)));
+                for (TextView t : otherFeatureTitles) t.setTextColor(curTheme.textPri);
+                for (TextView s : otherFeatureSubs) s.setTextColor(curTheme.textSec);
+                for (TextView h : secHdrs) h.setTextColor(curTheme.accent);
+                tv78T.setTextColor(curTheme.textPri);
+                tv78Sub.setTextColor(curTheme.textSec);
+                if (tvLogin7891State != null) tvLogin7891State.setTextColor(curTheme.accent);
+                btnSyncSave7891.setBackground(makeRoundBox(curTheme.btnBlue, 0x33FFFFFF, 1, dp(7)));
+                if (cardLogin7891 != null) cardLogin7891.setBackground(makeRoundBox(flagLogin7891 ? curTheme.cardOnBg : curTheme.cardBg, flagLogin7891 ? curTheme.cardOnEdge : curTheme.cardEdge, dp(1), dp(10)));
+                btnBpGo.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+                btnSaveProps.setBackground(makeRoundBox(curTheme.btnGreen, 0x33FFFFFF, 1, dp(7)));
+                btnClearProps.setBackground(makeRoundBox(curTheme.btnRed, 0x33FFFFFF, 1, dp(7)));
+            }
+        });
+
+        return wrap;
+    }
+
+    // =========================================================================
+    //  顶部全局模糊搜索浮层 + 跳转高亮引擎
+    // =========================================================================
+    private int scoreFuzzyQuery(String qRaw, FeatureSearchEntry e) {
+        if (qRaw == null) return 0;
+        String q = qRaw.trim().toLowerCase(Locale.US);
+        if (q.isEmpty()) return 0;
+        String t = e.title.toLowerCase(Locale.US);
+        String d = e.desc.toLowerCase(Locale.US);
+        String k = e.keywords.toLowerCase(Locale.US);
+        String c = e.category.toLowerCase(Locale.US);
+
+        if (t.equals(q)) return 300;
+        if (t.startsWith(q)) return 240;
+        if (t.contains(q)) return 180;
+        if (k.contains(q)) return 145;
+        if (c.contains(q)) return 120;
+        if (d.contains(q)) return 100;
+
+        String[] tokens = q.split("\\s+");
+        if (tokens.length > 1) {
+            String hay = c + " " + t + " " + k + " " + d;
+            boolean allOk = true;
+            for (String tok : tokens) {
+                if (!tok.isEmpty() && !hay.contains(tok)) { allOk = false; break; }
+            }
+            if (allOk) return 110;
+        }
+
+        // Character-order fuzzy subsequence match
+        String compact = q.replace(" ", "");
+        String hay = t + " " + k + " " + c;
+        int pos = -1;
+        int span = 0;
+        for (int i = 0; i < compact.length(); i++) {
+            char ch = compact.charAt(i);
+            int idx = hay.indexOf(ch, pos + 1);
+            if (idx < 0) return 0;
+            if (pos >= 0) span += (idx - pos);
+            pos = idx;
+        }
+        return Math.max(20, 90 - Math.min(60, span));
+    }
+
+    private void jumpToSearchEntry(final FeatureSearchEntry e) {
+        try {
+            InputMethodManager imm = (InputMethodManager) ctx.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null && etGlobalSearch != null) {
+                imm.hideSoftInputFromWindow(etGlobalSearch.getWindowToken(), 0);
+            }
+        } catch (Throwable ignored) {}
+        if (globalSearchOverlay != null) globalSearchOverlay.setVisibility(View.GONE);
+        switchTab(e.tabIdx);
+        if (e.subAction != null) {
+            try { e.subAction.run(); } catch (Throwable ignored) {}
+        }
+        if (e.scrollView != null && e.targetView != null) {
+            mainH.postDelayed(new Runnable() {
+                @Override public void run() {
+                    try {
+                        int top = 0;
+                        View v = e.targetView;
+                        while (v != null && v != e.scrollView && v.getParent() instanceof View) {
+                            top += v.getTop();
+                            v = (View) v.getParent();
+                        }
+                        e.scrollView.smoothScrollTo(0, Math.max(0, top - dp(24)));
+                    } catch (Throwable ignored) {}
+                }
+            }, 60);
+        }
+        if (e.targetView != null) {
+            final View hv = e.targetView;
+            hv.setAlpha(0.35f);
+            mainH.postDelayed(new Runnable() { @Override public void run() { hv.setAlpha(1f); } }, 160);
+            mainH.postDelayed(new Runnable() { @Override public void run() { hv.setAlpha(0.45f); } }, 320);
+            mainH.postDelayed(new Runnable() { @Override public void run() { hv.setAlpha(1f); } }, 500);
+        }
+    }
+
+    private void buildGlobalSearchOverlay(FrameLayout contentWrap) {
+        globalSearchOverlay = new FrameLayout(ctx);
+        globalSearchOverlay.setBackgroundColor(0x77000000);
+        globalSearchOverlay.setVisibility(View.GONE);
+        globalSearchOverlay.setClickable(true);
+        globalSearchOverlay.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { globalSearchOverlay.setVisibility(View.GONE); }
+        });
+
+        globalSearchCard = new LinearLayout(ctx);
+        globalSearchCard.setOrientation(LinearLayout.VERTICAL);
+        globalSearchCard.setClickable(true);
+        globalSearchCard.setPadding(dp(10), dp(8), dp(10), dp(8));
+        globalSearchCard.setBackground(makeRoundBox(curTheme.panelBg | 0xFF000000, curTheme.accent, dp(2), dp(10)));
+        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(290), Gravity.TOP);
+        cardLp.setMargins(dp(10), dp(4), dp(10), 0);
+
+        final TextView tvHint = new TextView(ctx);
+        tvHint.setText("模糊搜索全部功能 / 地图 / 任务（点击直接跳转定位）");
+        tvHint.setTextColor(curTheme.accent);
+        tvHint.setTextSize(11f);
+        tvHint.setTypeface(null, Typeface.BOLD);
+        tvHint.setPadding(0, 0, 0, dp(4));
+        globalSearchCard.addView(tvHint);
+
+        lvGlobalSearch = new ListView(ctx);
+        lvGlobalSearch.setDividerHeight(dp(4));
+        lvGlobalSearch.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        globalSearchCard.addView(lvGlobalSearch);
+
+        globalSearchOverlay.addView(globalSearchCard, cardLp);
+        contentWrap.addView(globalSearchOverlay, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        final List<FeatureSearchEntry> results = new ArrayList<FeatureSearchEntry>();
+        final BaseAdapter gsAdapter = new BaseAdapter() {
+            @Override public int getCount() { return results.size(); }
+            @Override public Object getItem(int pos) { return results.get(pos); }
+            @Override public long getItemId(int pos) { return pos; }
+            @Override public View getView(int pos, View convertView, ViewGroup parent) {
+                final FeatureSearchEntry e = results.get(pos);
+                LinearLayout row = new LinearLayout(ctx);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setBackground(makeRoundBox(curTheme.cardBg, curTheme.cardEdge, dp(1), dp(7)));
+                row.setPadding(dp(9), dp(6), dp(9), dp(6));
+
+                LinearLayout lc = new LinearLayout(ctx);
+                lc.setOrientation(LinearLayout.VERTICAL);
+                lc.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                TextView t1 = new TextView(ctx);
+                t1.setText("[" + e.category + "] " + e.title);
+                t1.setTextColor(curTheme.textPri);
+                t1.setTextSize(11.8f);
+                t1.setTypeface(null, Typeface.BOLD);
+                lc.addView(t1);
+                if (!e.desc.isEmpty()) {
+                    TextView t2 = new TextView(ctx);
+                    t2.setText(e.desc);
+                    t2.setTextColor(curTheme.textSec);
+                    t2.setTextSize(10f);
+                    t2.setSingleLine(true);
+                    t2.setEllipsize(TextUtils.TruncateAt.END);
+                    lc.addView(t2);
+                }
+                row.addView(lc);
+
+                TextView tGo = new TextView(ctx);
+                tGo.setText("跳转 ▸");
+                tGo.setTextColor(curTheme.accent);
+                tGo.setTextSize(11f);
+                tGo.setTypeface(null, Typeface.BOLD);
+                row.addView(tGo);
+
+                row.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) { jumpToSearchEntry(e); }
+                });
+                return row;
+            }
+        };
+        lvGlobalSearch.setAdapter(gsAdapter);
+
+        final Runnable updateSearch = new Runnable() {
+            @Override public void run() {
+                String q = etGlobalSearch != null && etGlobalSearch.getText() != null ? etGlobalSearch.getText().toString().trim() : "";
+                if (btnClearGlobalSearch != null) btnClearGlobalSearch.setVisibility(q.isEmpty() ? View.GONE : View.VISIBLE);
+                if (q.isEmpty()) {
+                    globalSearchOverlay.setVisibility(View.GONE);
+                    return;
+                }
+                results.clear();
+                for (FeatureSearchEntry e : searchRegistry) {
+                    int sc = scoreFuzzyQuery(q, e);
+                    if (sc > 0) {
+                        FeatureSearchEntry copy = new FeatureSearchEntry();
+                        copy.title = e.title; copy.desc = e.desc; copy.keywords = e.keywords;
+                        copy.category = e.category; copy.tabIdx = e.tabIdx;
+                        copy.targetView = e.targetView; copy.scrollView = e.scrollView;
+                        copy.subAction = e.subAction; copy.score = sc;
+                        results.add(copy);
+                    }
+                }
+                String ql = q.toLowerCase(Locale.US);
+                if (sMapsCache != null) {
+                    int mCnt = 0;
+                    for (final MapEntry m : sMapsCache) {
+                        if (!m.valid) continue;
+                        if (m.name.toLowerCase(Locale.US).contains(ql) || String.valueOf(m.id).equals(q)) {
+                            FeatureSearchEntry me = new FeatureSearchEntry();
+                            me.category = "地图传送";
+                            me.title = m.name + " (#" + m.id + ")";
+                            me.desc = (m.cat >= 1 && m.cat < CHAPTER_NAMES.length ? CHAPTER_NAMES[m.cat] : "") + " · 定位到地图传送并筛查";
+                            me.tabIdx = 8;
+                            me.score = 135;
+                            me.subAction = new Runnable() {
+                                @Override public void run() {
+                                    if (etMapSearchBox != null) etMapSearchBox.setText(m.name);
+                                }
+                            };
+                            results.add(me);
+                            if (++mCnt >= 6) break;
+                        }
+                    }
+                }
+                if (sTasksCache != null) {
+                    int tCnt = 0;
+                    for (final TaskEntry t : sTasksCache) {
+                        if (t.name.toLowerCase(Locale.US).contains(ql) || t.sceneName.toLowerCase(Locale.US).contains(ql) || String.valueOf(t.id).equals(q)) {
+                            FeatureSearchEntry te = new FeatureSearchEntry();
+                            te.category = "任务管理";
+                            te.title = t.name + " (#" + t.id + ")";
+                            te.desc = "归属:" + t.sceneName + (t.finishTxt.isEmpty() ? "" : (" · " + t.finishTxt));
+                            te.tabIdx = 9;
+                            te.score = 130;
+                            te.subAction = new Runnable() {
+                                @Override public void run() {
+                                    if (etTaskSearchBox != null) etTaskSearchBox.setText(t.name);
+                                }
+                            };
+                            results.add(te);
+                            if (++tCnt >= 6) break;
+                        }
+                    }
+                }
+                Collections.sort(results, new Comparator<FeatureSearchEntry>() {
+                    @Override public int compare(FeatureSearchEntry a, FeatureSearchEntry b) { return b.score - a.score; }
+                });
+                tvHint.setText(results.isEmpty()
+                    ? ("未找到匹配 \"" + q + "\" 的功能 / 地图 / 任务")
+                    : ("找到 " + results.size() + " 个匹配结果（点击立即跳转定位）"));
+                globalSearchOverlay.setVisibility(View.VISIBLE);
+                globalSearchOverlay.bringToFront();
+                gsAdapter.notifyDataSetChanged();
+            }
+        };
+
+        if (etGlobalSearch != null) {
+            etGlobalSearch.addTextChangedListener(new TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+                @Override public void onTextChanged(CharSequence s, int a, int b, int c) { updateSearch.run(); }
+                @Override public void afterTextChanged(Editable s) {}
+            });
+            etGlobalSearch.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+                @Override public void onFocusChange(View v, boolean hasFocus) {
+                    if (hasFocus && etGlobalSearch.getText() != null && etGlobalSearch.getText().length() > 0) {
+                        updateSearch.run();
+                    }
+                }
+            });
+        }
+        if (btnClearGlobalSearch != null) {
+            btnClearGlobalSearch.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    if (etGlobalSearch != null) etGlobalSearch.setText("");
+                    globalSearchOverlay.setVisibility(View.GONE);
+                }
+            });
+        }
+    }
+
+    private void registerExtraGlobalSearchEntries() {
+        registerFeature("物品发放", "物品添加与批量发送", "搜索全游戏物品、武器、防具、蓝图并发送至邮箱或背包", "发物品 刷物品 武器 装备 道具 邮箱 背包", 0, pages[0], null, null);
+        registerFeature("物品删除", "仓库物品清理与销毁", "按数量或一键清除指定仓库储物箱多余物品", "删物品 清理 仓库 储物箱 销毁", 1, pages[1], null, null);
+        registerFeature("货币修改", "银币 / 银券 / 黑市币 / 邮票", "直接设置与锁定各类游戏内货币数值", "钱 金币 银币 银券 黑市 邮票 货币", 2, pages[2], null, null);
+        registerFeature("全部属性", "生命 / 攻击 / 攻速 / 移速 / 暴击", "逐项设置与锁定主角实时属性数值", "属性 血量 攻击 移速 攻速 无敌 秒杀 体力", 3, pages[3], null, null);
+        registerFeature("Buff施加", "施加/清除状态Buff与光环", "一键叠加或移除游戏内各种正负面Buff状态", "buff 状态 增益 光环 无敌", 4, pages[4], null, null);
+        registerFeature("天赋技能", "解锁与升级全角色天赋技能", "为主角或随从一键解锁满级天赋技能", "天赋 技能 加点 等级 满级", 5, pages[5], null, null);
+
+        registerFeature("雇佣随从", "剧情随从招募", "虎哥、小哈士奇、强子、老吴、K、尼奥、姜娜等剧情角色招募", "随从 剧情 虎哥 哈士奇 强子 老吴 姜娜 尼奥", 7, pages[7], null, new Runnable() {
+            @Override public void run() { if (hireSubTabBtns.size() > 0) hireSubTabBtns.get(0).performClick(); }
+        });
+        registerFeature("雇佣随从", "营地战士/工人", "招募或增员营地可工作采集与守卫单位", "营地 工人 战士 招募 矿工 伐木", 7, pages[7], null, new Runnable() {
+            @Override public void run() { if (hireSubTabBtns.size() > 1) hireSubTabBtns.get(1).performClick(); }
+        });
+        registerFeature("雇佣随从", "强制雇佣 (全NPC/首领)", "无视阵营强制召唤游戏内任意NPC/首领/怪作为随从", "强雇 强制雇佣 首领 boss npc 召唤", 7, pages[7], null, new Runnable() {
+            @Override public void run() { if (hireSubTabBtns.size() > 2) hireSubTabBtns.get(2).performClick(); }
+        });
+        registerFeature("雇佣随从", "现场收编 (扫描与撤回)", "可调距离扫描身边活体直接收编入队并支持撤回", "现场收编 扫描 收服 撤回 抓捕", 7, pages[7], null, new Runnable() {
+            @Override public void run() { if (hireSubTabBtns.size() > 3) hireSubTabBtns.get(3).performClick(); }
+        });
+
+        registerFeature("主题风格", "控制台界面配色主题切换", "深海/赛博/翡翠/烈焰/极简浅色等主题切换", "主题 皮肤 颜色 外观 界面", 13, pages[13], null, null);
+        registerFeature("诊断设置", "版本检查更新 / 配置重扫 / 运行诊断", "检查Mod更新、重扫游戏动态配表与缺失图标、重置悬浮球位置", "诊断 设置 更新 扫描 图标 悬浮球", 14, pages[14], null, null);
     }
     // =========================================================================
     //  TAB 4: 主题风格 (5 套完整切换配色)

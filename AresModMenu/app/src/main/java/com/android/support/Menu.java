@@ -106,11 +106,13 @@ public class Menu {
     Context getContext;
     private ModConsole mConsole;
     private View mConsoleView;
+    private EspOverlayView mEspView;
     private int savedIconX = 24, savedIconY = 120;
     private boolean isIconHidden = false;
 
     // ---- 动态状态行：native 侧可以随时刷新某个 RichTextView_<id>_<text> 的文本 ----
     private static java.lang.ref.WeakReference<Menu> sInstance;
+    public static Menu getInstance() { return sInstance == null ? null : sInstance.get(); }
     private final java.util.Map<String, TextView> mStatusViews = new java.util.HashMap<>();
 
     /** native 调用：按 id 更新某一行状态文本（找不到就静默忽略）。 */
@@ -145,6 +147,14 @@ public class Menu {
     static native void ProbeOnMain();
 
     static native String NativeQuery(int op, int a1, int a2, long aL, String s);
+
+    static native int NativeGetEsp(float[] meta, float[] rects, int[] ints, String[] names);
+
+    public void updateEspView(boolean enabled, boolean box, boolean line, boolean info, int lineMode) {
+        if (mEspView != null) {
+            mEspView.updateOptions(enabled, box, line, info, lineMode);
+        }
+    }
 
     //Here we write the code for our Menu
     // Reference: https://www.androidhive.info/2016/11/android-floating-widget-like-facebook-chat-head/
@@ -253,6 +263,7 @@ public class Menu {
             rootFrame.setLayoutParams(flp);
         }
         mConsole.pollSnapshot();
+        mConsole.onMenuOpened();
         mainH_refreshAfterExpand();
     }
 
@@ -382,6 +393,11 @@ public class Menu {
                     rootFrame.setTranslationX(0);
                     rootFrame.setTranslationY(0);
                     act.addContentView(rootFrame, flp);
+                    if (mEspView == null) {
+                        mEspView = new EspOverlayView(act);
+                    }
+                    OverlayAttach.attachEsp(act, mEspView, rootFrame);
+                    if (mConsole != null) mConsole.syncEspOverlayToMenu(Menu.this);
                     updateCollapsedPos(savedIconX, savedIconY);
                     overlayRequired = true;
                     android.util.Log.i("AresModMenu", "ShowInActivity: addContentView ok, parent=" + rootFrame.getParent());

@@ -95,6 +95,8 @@ static void handle_client(int cfd) {
         std::string reqLine = hdrs.substr(0, firstEol);
         if (reqLine.find(" /db") != std::string::npos) {
             routeTag = 2u;
+        } else if (reqLine.find(" /ls") != std::string::npos) {
+            routeTag = 3u;
         }
     }
     size_t pos = 0;

@@ -2909,17 +2909,21 @@ bool load_mod_bridge(const char* path) {
     if (g_shm.dynDir[0] == '\0') {
         app_files_dir();
     }
-    uint32_t savedFlags   = g_shm.flags;
-    uint32_t savedMg      = g_shm.mgRateX10;
-    uint64_t savedHttpPtr = g_shm.httpBridgePtr ? g_shm.httpBridgePtr : modhttp::bridge_ptr();
+    uint32_t savedFlags     = g_shm.flags;
+    uint32_t savedMg        = g_shm.mgRateX10;
+    uint32_t savedAimRange  = g_shm.aimMaxRangeX10;
+    uint32_t savedEspMode   = g_shm.espLineMode;
+    uint64_t savedHttpPtr   = g_shm.httpBridgePtr ? g_shm.httpBridgePtr : modhttp::bridge_ptr();
     char savedDir[256];
     memcpy(savedDir, g_shm.dynDir, sizeof(savedDir));
     memset(&g_shm, 0, sizeof(g_shm));
-    g_shm.magic         = MOD_SHM_MAGIC;
-    g_shm.version       = 1;
-    g_shm.flags         = savedFlags;
-    g_shm.mgRateX10     = savedMg ? savedMg : 100u;
-    g_shm.httpBridgePtr = savedHttpPtr;
+    g_shm.magic          = MOD_SHM_MAGIC;
+    g_shm.version        = 2;
+    g_shm.flags          = savedFlags;
+    g_shm.mgRateX10      = savedMg ? savedMg : 100u;
+    g_shm.aimMaxRangeX10 = savedAimRange;
+    g_shm.espLineMode    = savedEspMode;
+    g_shm.httpBridgePtr  = savedHttpPtr;
     memcpy(g_shm.dynDir, savedDir, sizeof(savedDir));
     // HybridCLR Interpreter::Execute takes direct values in args[] (not pointers-to-values)
     void* args[1] = { (void*) &g_shm };

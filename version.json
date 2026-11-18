@@ -1,11 +1,11 @@
 {
-  "versionCode": 7,
-  "versionName": "v1.2.1",
-  "changelog": "1. 修复「自动记住开关状态」在重进游戏后未能正确恢复与同步至底层的问题（含后台未展开悬浮窗时自动生效与防误覆写）\n2. 优化开关回调保护，避免快照刷新期间状态互相覆盖",
-  "downloadUrl": "https://gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.1/AresModMenu.apk",
+  "versionCode": 10,
+  "versionName": "v1.4.8",
+  "changelog": "1. 修复地图传送进入联机副本卡加载：自动检测联机副本并以单人局域网托管流程无缝进入，同时支持从联机副本随时传送返回单人地图\n2. 新增「生成实体」专栏：按游戏官方大类（Unit/NPC/Worker）与 28 项官方细分显示全量实体并支持搜索，点击于玩家位置生成并严格保留原生物阵营（敌对/中立/友军）\n3. 新增「娱乐功能」专栏：\n  - 电子斗蛐蛐：无分类限制自由搜索选取任意两个实体，强制互为敌对并视玩家为友军，死锁互殴仇恨（玩家靠近或攻击均不转移）\n  - 随机生成：全局均等概率打乱全地图敌对生物生成（保留波次触发与友军NPC）\n  - 留声机播放本地音乐迁移至娱乐功能栏\n4. 全地图/子地图分级传送、任务全链路管理、固定 UserID=7891 登录跨存档兼容、顶部全局模糊搜索及 15 栏控制台界面全面整合优化",
+  "downloadUrl": "https://gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.4.8/AresModMenu.apk",
   "mirrorUrls": [
-    "https://gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.1/AresModMenu.apk",
-    "https://cdn.gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.1/AresModMenu.apk",
-    "https://hk.gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.2.1/AresModMenu.apk"
+    "https://gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.4.8/AresModMenu.apk",
+    "https://cdn.gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.4.8/AresModMenu.apk",
+    "https://hk.gh-proxy.org/https://github.com/qpalzm2332933171-droid/ares-virus2-mod/releases/download/v1.4.8/AresModMenu.apk"
   ]
 }
